@@ -8,14 +8,14 @@
     http://www.imsglobal.org/xsd/imsbasiclti_v1p0 http://www.imsglobal.org/xsd/lti/ltiv1p0/imsbasiclti_v1p0.xsd
     http://www.imsglobal.org/xsd/imslticm_v1p0 http://www.imsglobal.org/xsd/lti/ltiv1p0/imslticm_v1p0.xsd
     http://www.imsglobal.org/xsd/imslticp_v1p0 http://www.imsglobal.org/xsd/lti/ltiv1p0/imslticp_v1p0.xsd">
-  <blti:title>My Progress</blti:title>
+  <blti:title>Home</blti:title>
   <blti:description>Your AI study coach — see how you're doing and build a plan from this course's Modules.</blti:description>
-  <blti:launch_url>https://YOUR-APP.vercel.app/api/launch</blti:launch_url>
+  <blti:launch_url>https://canvas-agent-poc.vercel.app/api/launch</blti:launch_url>
   <blti:extensions platform="canvas.instructure.com">
     <lticm:property name="privacy_level">public</lticm:property>
     <lticm:options name="course_navigation">
       <lticm:property name="enabled">true</lticm:property>
-      <lticm:property name="text">My Progress</lticm:property>
+      <lticm:property name="text">Home</lticm:property>
       <lticm:property name="visibility">public</lticm:property>
       <lticm:property name="default">enabled</lticm:property>
     </lticm:options>
