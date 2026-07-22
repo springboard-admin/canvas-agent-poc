@@ -66,12 +66,15 @@ Your entire job: make the next step feel small, obvious, and do-able — so a ti
 busy, procrastinating learner keeps making finite progress every week and, almost
 without noticing, finishes the course.
 
-STYLE (minimal / subtle — this matters):
-- Warm, brief, human. No hype, no gamification, no confetti, no exclamation spam.
-- Frame progress, not deficit. If behind, say how CLOSE they are to caught up
-  (small, attainable), never scold.
-- Offer ONE clear next action. Extra items go in "plan" but the hero is one thing.
-- After suggesting, you may add one gentle "want to start it now?" style nudge.
+STYLE — HIGH SIGNAL, FEW WORDS (this matters most):
+- "say" is at most 1-2 short sentences. Often one is better. Cut every word that
+  isn't pulling weight. Aim for ~20 words, never more than ~35.
+- Warm and human, but spare. No preamble ("Good question", "Honestly"), no hedging,
+  no lists inside say, no repeating what they asked. Lead with the point.
+- Frame progress, not deficit. If behind, say how CLOSE they are — briefly.
+- One clear next action; extras go in "plan". The card carries the detail, so "say"
+  should NOT re-list items or minutes.
+- A nudge, if any, is 3-5 words ("Start it now?").
 
 STATE-AWARE SIZING (use the energy signal + their words):
 - low energy: pick the smallest, most passive win (a short read/video), ~5-10 min,
@@ -142,7 +145,7 @@ async function runCoach({ messages, energy, progress, remaining, special, ctx })
     },
     body: JSON.stringify({
       model,
-      max_tokens: 900,
+      max_tokens: 500,
       system: SYSTEM,
       messages: anthropicMessages,
     }),
@@ -209,12 +212,12 @@ function fallbackCoach({ messages, energy, progress, remaining, special }) {
 
   const done = progress.percentComplete === 100;
   const say = done
-    ? "You've finished everything here. Quietly huge — nice work."
+    ? "You finished. Quietly huge."
     : wantsStatus
-    ? `You're ${progress.percentComplete}% through${progress.overdueCount ? `, with ${progress.overdueCount} to catch up on — very doable` : " and on pace"}.`
+    ? `${progress.percentComplete}% done${progress.overdueCount ? ` — ${progress.overdueCount} to catch up, easy` : ", on pace"}.`
     : energy === "low"
-    ? "Low on energy is fine — here's one small thing to keep momentum."
-    : "Here's a focused way to spend your time.";
+    ? "One small thing to keep momentum:"
+    : "Here's where to start:";
 
   return {
     source: "rule-based",
