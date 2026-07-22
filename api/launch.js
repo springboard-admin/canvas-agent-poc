@@ -18,21 +18,25 @@ export default async function handler(req, res) {
 
     const p = normalizeBody(req.body);
 
-    // ---- verify OAuth 1.0 signature ----
-    const key = p.oauth_consumer_key;
-    if (key !== env("LTI_CONSUMER_KEY")) {
-      res.status(401).send("Unknown oauth_consumer_key");
-      return;
-    }
-    const { ok } = verify(
-      "POST",
-      launchUrl(req),
-      p,
-      env("LTI_SHARED_SECRET")
-    );
-    if (!ok) {
-      res.status(401).send("Invalid LTI signature");
-      return;
+    // ---- verify OAuth 1.0 signature (optional) ----
+    // If LTI_SHARED_SECRET is set, we verify the launch signature. If it's not
+    // set, we skip verification — matching the simpler org flow where any
+    // throwaway key/secret is entered in Canvas. Fine for a test-course POC;
+    // set the secret for anything real.
+    const secret = env("LTI_SHARED_SECRET", "");
+    if (secret) {
+      const expectedKey = env("LTI_CONSUMER_KEY", "");
+      if (expectedKey && p.oauth_consumer_key !== expectedKey) {
+        res.status(401).send("Unknown oauth_consumer_key");
+        return;
+      }
+      const { ok } = verify("POST", launchUrl(req), p, secret);
+      if (!ok) {
+        res.status(401).send("Invalid LTI signature");
+        return;
+      }
+    } else {
+      console.warn("LTI_SHARED_SECRET not set — skipping signature verification (POC mode).");
     }
 
     // ---- pull the bits we care about ----
