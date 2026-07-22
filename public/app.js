@@ -1,117 +1,188 @@
-// Study Agent SPA — vanilla JS, no build step.
-// Principle (per spec): nothing shows on its own. The home page is a calm,
-// futuristic agent prompt; cards appear only when the student asks something.
+// Study Agent SPA — Phase 1: conversational, state-aware, delightful & lite.
+// Memory is client-side: we keep the transcript here and resend it each turn.
 (function () {
   const boot = window.__BOOT__ || { name: "there", course: "" };
   const root = document.getElementById("root");
 
+  // ---- state ----
+  const transcript = []; // {role, content}
+  let energy = null;     // "low" | "ok" | "high" | null
+  let busy = false;
+
+  const hour = new Date().getHours();
+  const greet = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+
   root.innerHTML = `
     <div class="hero">
-      <div class="orb"></div>
-      <h1>Hi ${escape(boot.name)} — ready when you are.</h1>
-      <p>${boot.course ? escape(boot.course) + " · " : ""}Ask me how you're doing, or tell me how long you've got.</p>
+      <div class="orb" id="orb"></div>
+      <h1>${greet}, ${esc(boot.name)}.</h1>
+      <p class="sub">${boot.course ? esc(boot.course) + " · " : ""}Let's find your next small step.</p>
+      <div class="energy" id="energy">
+        <span class="energy-q">How's your energy?</span>
+        <button class="e" data-e="low">🌙 low</button>
+        <button class="e" data-e="ok">🙂 ok</button>
+        <button class="e" data-e="high">⚡ high</button>
+      </div>
     </div>
     <div class="chips" id="chips"></div>
-    <div class="composer">
-      <input id="q" placeholder="e.g. I have 15 minutes to study" autocomplete="off"/>
-      <button id="send">Ask</button>
-    </div>
     <div class="stream" id="stream"></div>
-    <div class="foot">Recommendations are drawn from this course's Canvas Modules.</div>
+    <div class="composer">
+      <input id="q" placeholder="Ask me anything — or tell me how long you've got" autocomplete="off"/>
+      <button id="send" aria-label="Send">→</button>
+    </div>
+    <div class="foot">Your next step is drawn from this course's Modules.</div>
   `;
 
   const stream = document.getElementById("stream");
   const input = document.getElementById("q");
+  const orb = document.getElementById("orb");
+
+  // energy one-tap
+  document.querySelectorAll("#energy .e").forEach((b) => {
+    b.onclick = () => {
+      energy = b.dataset.e;
+      document.querySelectorAll("#energy .e").forEach((x) => x.classList.toggle("on", x === b));
+      const line = energy === "low" ? "Got it — we'll keep it light." : energy === "high" ? "Love it — let's use that." : "Perfect.";
+      document.querySelector(".energy-q").textContent = line;
+    };
+  });
 
   const chips = [
-    { label: "How am I doing?", q: "How am I doing?", minutes: 0 },
-    { label: "I have 15 minutes", q: "I have 15 minutes to study", minutes: 15 },
-    { label: "I have 30 minutes", q: "I have 30 minutes to study", minutes: 30 },
-    { label: "What should I catch up on?", q: "What do I need to catch up on?", minutes: 30 },
+    { label: "How am I doing?", q: "How am I doing?" },
+    { label: "I've got 15 minutes", q: "I have 15 minutes right now" },
+    { label: "What should I do today?", q: "What should I focus on today?" },
+    { label: "Help me catch up", q: "I feel behind — help me catch up" },
   ];
   const chipWrap = document.getElementById("chips");
   chips.forEach((c) => {
     const b = document.createElement("button");
     b.className = "chip";
     b.textContent = c.label;
-    b.onclick = () => ask(c.q, c.minutes);
+    b.onclick = () => ask(c.q);
     chipWrap.appendChild(b);
   });
 
-  document.getElementById("send").onclick = () => submit();
+  document.getElementById("send").onclick = submit;
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
 
   function submit() {
     const v = input.value.trim();
-    if (!v) return;
+    if (!v || busy) return;
     input.value = "";
-    ask(v, inferMinutes(v));
+    ask(v);
   }
 
-  function inferMinutes(text) {
-    const m = text.match(/(\d{1,3})\s*(min|minute|minutes|m)\b/i);
-    if (m) return parseInt(m[1], 10);
-    if (/hour|hr/i.test(text)) return 60;
-    return 30; // sensible default
-  }
-
-  async function ask(message, minutes) {
+  async function ask(message) {
+    if (busy) return;
+    busy = true;
+    hideIntro();
     addUser(message);
+    transcript.push({ role: "user", content: message });
     const thinking = addThinking();
+    orb.classList.add("thinking");
     try {
       const r = await fetch("/api/plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message, minutes }),
+        body: JSON.stringify({ messages: transcript, energy }),
       });
       const data = await r.json();
       thinking.remove();
       if (!r.ok) { addError(data.error || "Something went wrong."); return; }
-      renderResult(data, minutes);
+      transcript.push({ role: "assistant", content: data.say || "" });
+      render(data);
     } catch (e) {
       thinking.remove();
       addError(e.message);
+    } finally {
+      busy = false;
+      orb.classList.remove("thinking");
     }
   }
 
-  function renderResult(data, minutes) {
-    const p = data.progress || {};
-    // Progress + status card
-    const behind = (p.overdueCount || 0) > 0;
-    const pill = behind
-      ? `<span class="pill warn">${p.overdueCount} past due</span>`
-      : `<span class="pill good">On track</span>`;
-    stream.appendChild(card(`
-      <div class="k">Where you stand</div>
-      <div class="status-line">${escape(data.status_line || "")} ${pill}</div>
-      <div class="reason">${escape(data.reason || "")}</div>
-      <div class="bar"><i style="width:${p.percentComplete || 0}%"></i></div>
-      <div class="meta"><span>${p.doneItems || 0} of ${p.totalItems || 0} items done</span><span>${p.percentComplete || 0}%</span></div>
-    `));
+  function render(data) {
+    if (data.say) addAgent(data.say);
 
-    // Time-boxed plan card
-    if (Array.isArray(data.plan) && data.plan.length) {
-      const items = data.plan.map((it) => `
+    if (data.celebrate) addCelebrate(data.progress);
+
+    // Status card only when they asked about standing.
+    if (data.intent === "status" && data.progress) addProgress(data.progress);
+
+    // The hero: one clear next action.
+    if (data.nextAction) addNextAction(data.nextAction);
+
+    // Secondary items, quietly.
+    if (Array.isArray(data.plan) && data.plan.length > (data.nextAction ? 1 : 0)) {
+      addPlan(data.plan, data.nextAction);
+    }
+
+    if (data.special) addSpecial(data.special);
+
+    scrollEnd();
+  }
+
+  // ---- renderers ----
+  function addNextAction(a) {
+    const el = card(`
+      <div class="k">Your next step</div>
+      <div class="next-title">${esc(a.title)}</div>
+      <div class="next-meta">~${a.minutes || "?"} min${a.why ? " · " + esc(a.why) : ""}</div>
+      ${a.url ? `<a class="start" href="${a.url}" target="_blank" rel="noopener">Start now →</a>` : ""}
+    `);
+    el.classList.add("hero-card");
+    stream.appendChild(el);
+  }
+
+  function addPlan(plan, hero) {
+    const items = plan
+      .filter((it) => !hero || it.title !== hero.title)
+      .map((it) => `
         <div class="plan-item">
-          <div class="time">${it.minutes || "~"} min</div>
+          <div class="time">~${it.minutes || "?"} min</div>
           <div>
-            ${it.url ? `<a href="${it.url}" target="_blank" rel="noopener">${escape(it.title)}</a>` : `<span>${escape(it.title)}</span>`}
-            <div class="why">${escape(it.why || "")}</div>
+            ${it.url ? `<a href="${it.url}" target="_blank" rel="noopener">${esc(it.title)}</a>` : `<span>${esc(it.title)}</span>`}
+            ${it.why ? `<div class="why">${esc(it.why)}</div>` : ""}
           </div>
         </div>`).join("");
-      stream.appendChild(card(`
-        <div class="k">Your ${minutes}-minute plan</div>
-        ${items}
-        ${data.encouragement ? `<div class="reason" style="margin-top:14px">${escape(data.encouragement)}</div>` : ""}
-        <div class="src">Generated by ${data.source === "claude" ? "AI from your live module data" : "rule-based fallback"}.</div>
-      `));
-    }
-    stream.lastChild.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (!items) return;
+    stream.appendChild(card(`<div class="k">If you've got more time</div>${items}`));
   }
 
+  function addProgress(p) {
+    const behind = (p.overdueCount || 0) > 0;
+    const pill = behind
+      ? `<span class="pill warn">${p.overdueCount} to catch up</span>`
+      : `<span class="pill good">on pace</span>`;
+    stream.appendChild(card(`
+      <div class="k">Where you stand</div>
+      <div class="status-line">${p.percentComplete}% of the way there ${pill}</div>
+      <div class="bar"><i style="width:${p.percentComplete || 0}%"></i></div>
+      <div class="meta"><span>${p.doneItems} of ${p.totalItems} done</span><span>${p.percentComplete}%</span></div>
+    `));
+  }
+
+  function addSpecial(s) {
+    const label = s.kind === "resume" ? "Resume assignment" : "Book a call";
+    stream.appendChild(card(`
+      <div class="k">Worth knowing</div>
+      <div class="next-meta" style="margin-bottom:8px">${esc(s.note || label)}</div>
+      ${s.url ? `<a class="start ghost" href="${s.url}" target="_blank" rel="noopener">${label} →</a>` : ""}
+    `));
+  }
+
+  function addCelebrate(p) {
+    const el = card(`<div class="celebrate">✨ You finished the course.</div><div class="reason">You did it a little at a time — that's the whole trick.</div>`);
+    el.classList.add("celebrate-card");
+    stream.appendChild(el);
+  }
+
+  // ---- primitives ----
   function card(html) { const d = document.createElement("div"); d.className = "card"; d.innerHTML = html; return d; }
-  function addUser(t) { const d = document.createElement("div"); d.className = "user-msg"; d.textContent = t; stream.appendChild(d); d.scrollIntoView({ behavior: "smooth" }); }
-  function addThinking() { const d = document.createElement("div"); d.className = "thinking"; d.textContent = "Thinking through your modules…"; stream.appendChild(d); return d; }
+  function addAgent(t) { const d = document.createElement("div"); d.className = "agent-msg"; d.textContent = t; stream.appendChild(d); }
+  function addUser(t) { const d = document.createElement("div"); d.className = "user-msg"; d.textContent = t; stream.appendChild(d); scrollEnd(); }
+  function addThinking() { const d = document.createElement("div"); d.className = "thinking"; d.innerHTML = `<span></span><span></span><span></span>`; stream.appendChild(d); scrollEnd(); return d; }
   function addError(m) { const d = document.createElement("div"); d.className = "card err"; d.textContent = "⚠ " + m; stream.appendChild(d); }
-  function escape(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+  function hideIntro() { chipWrap.style.display = "none"; }
+  function scrollEnd() { stream.lastChild && stream.lastChild.scrollIntoView({ behavior: "smooth", block: "end" }); }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 })();
