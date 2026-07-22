@@ -1,0 +1,13 @@
+{
+  "name": "canvas-study-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lite POC: a clean, futuristic AI study-agent that launches as an LTI 1.3 tool inside a Canvas course and builds time-boxed study plans from the course's Modules.",
+  "type": "module",
+  "scripts": {
+    "check": "node --check api/launch.js && node --check api/plan.js && node --check lib/lti.js && node --check lib/oauth1.js && node --check lib/canvas.js && node --check lib/store.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "jose": "^5.9.6"
+  }
+}
