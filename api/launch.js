@@ -89,6 +89,7 @@ function renderShell(ctx, sessionToken) {
   const bootstrap = JSON.stringify({
     name: ctx.givenName || ctx.name,
     course: ctx.contextTitle,
+    uid: ctx.userId || "anon",
     isStudent: ctx.isStudent,
     sessionToken,
   });

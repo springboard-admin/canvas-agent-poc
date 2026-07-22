@@ -65,6 +65,48 @@
   document.getElementById("send").onclick = submit;
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
 
+  // ---- last-visit memory (client-side, no infra) ----
+  const MEM_KEY = "sa_last_" + (boot.uid || "anon") + "_" + (boot.course || "");
+  function readMem() {
+    try { return JSON.parse(localStorage.getItem(MEM_KEY) || "null"); } catch { return null; }
+  }
+  function writeMem(pct) {
+    try { localStorage.setItem(MEM_KEY, JSON.stringify({ ts: Date.now(), pct })); } catch { /* storage blocked */ }
+  }
+
+  // ---- proactive personalized greeting on load ----
+  greetOnLoad();
+
+  async function greetOnLoad() {
+    const mem = readMem();
+    const signals = {};
+    if (mem && typeof mem.ts === "number") {
+      signals.daysAway = Math.floor((Date.now() - mem.ts) / 86400000);
+      signals.lastPercent = mem.pct;
+    }
+    busy = true;
+    const thinking = addThinking();
+    orb.classList.add("thinking");
+    try {
+      const r = await fetch("/api/plan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: [], energy, mode: "greeting", signals }),
+      });
+      const data = await r.json();
+      thinking.remove();
+      if (!r.ok) return; // stay quiet on greeting failure; user can still ask
+      if (data.say) transcript.push({ role: "assistant", content: data.say });
+      render(data);
+      if (data.progress) writeMem(data.progress.percentComplete);
+    } catch {
+      thinking.remove();
+    } finally {
+      busy = false;
+      orb.classList.remove("thinking");
+    }
+  }
+
   function submit() {
     const v = input.value.trim();
     if (!v || busy) return;
@@ -91,6 +133,7 @@
       if (!r.ok) { addError(data.error || "Something went wrong."); return; }
       transcript.push({ role: "assistant", content: data.say || "" });
       render(data);
+      if (data.progress) writeMem(data.progress.percentComplete);
     } catch (e) {
       thinking.remove();
       addError(e.message);

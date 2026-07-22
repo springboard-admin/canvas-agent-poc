@@ -30,7 +30,12 @@ export default async function handler(req, res) {
       }
     }
 
-    const { messages = [], energy = null } = req.body || {};
+    const {
+      messages = [],
+      energy = null,
+      mode = "chat",
+      signals = {},
+    } = req.body || {};
     const courseId = ctx?.courseId || env("CANVAS_COURSE_ID", "");
     if (!courseId) {
       res.status(400).json({ error: "No course context. Launch from Canvas." });
@@ -48,11 +53,19 @@ export default async function handler(req, res) {
       estMinutes: estimateMinutes(it),
     }));
 
+    // progressDelta = points gained since their last visit (from client localStorage).
+    const progressDelta =
+      typeof signals.lastPercent === "number"
+        ? progress.percentComplete - signals.lastPercent
+        : null;
+    const daysAway =
+      typeof signals.daysAway === "number" ? signals.daysAway : null;
+
     let agent;
     if (process.env.ANTHROPIC_API_KEY) {
-      agent = await runCoach({ messages, energy, progress, remaining, special, ctx });
+      agent = await runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, ctx });
     } else {
-      agent = fallbackCoach({ messages, energy, progress, remaining, special });
+      agent = fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special });
     }
 
     res.status(200).json({ progress, ...agent });
@@ -95,6 +108,18 @@ provided list AND are relevant to what the student said or asked. Never invent t
 
 TIME: use the provided estMinutes. Always phrase estimates as approximate ("~10 min").
 
+OPENING GREETING (when told this is the opening): the student just landed, hasn't
+asked anything. Greet with ONE personalized hook that makes them want to stay and
+finish something small right now, then attach ONE tiny next step. Use the signals:
+- daysAway large (>=3): a warm "welcome back", zero guilt, hand them the smallest
+  possible re-entry win. Lower the bar, don't raise it.
+- progressDelta > 0: name the momentum quietly ("you moved X% since last time") and
+  invite one more small step to keep it.
+- behind / progressDelta ~0 and away: make caught-up feel CLOSE and cheap — one small
+  thing, not the whole backlog.
+- on track: reinforce the streak and give them the next step so they keep coming back.
+Always end the opening pointed at exactly one do-able item. Keep intent "plan".
+
 CELEBRATION: if percentComplete is 100, warmly acknowledge they've finished — keep it
 understated and genuine.
 
@@ -109,11 +134,13 @@ Return STRICT JSON only, no prose outside it:
 }
 nextAction/plan titles and urls MUST come from the provided remaining items. Plan minutes should sum to <= the student's available time.`;
 
-async function runCoach({ messages, energy, progress, remaining, special, ctx }) {
+async function runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, ctx }) {
   const model = env("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001");
   const grounding = {
     student: ctx?.givenName || ctx?.name || "there",
     energySignal: energy,
+    daysAway,
+    progressDeltaSinceLastVisit: progressDelta,
     progress: {
       percentComplete: progress.percentComplete,
       doneItems: progress.doneItems,
@@ -135,6 +162,12 @@ async function runCoach({ messages, energy, progress, remaining, special, ctx })
     { role: "user", content: `LIVE COURSE DATA (authoritative, use these numbers):\n${JSON.stringify(grounding)}` },
     ...convo,
   ];
+  if (mode === "greeting") {
+    anthropicMessages.push({
+      role: "user",
+      content: "This is the OPENING — the student just landed and hasn't asked anything. Follow the OPENING GREETING rules: one personalized hook + one tiny next step.",
+    });
+  }
 
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -183,8 +216,9 @@ function normalize(p, progress) {
 }
 
 // Deterministic coach when no API key — keeps the POC alive and on-message.
-function fallbackCoach({ messages, energy, progress, remaining, special }) {
+function fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special }) {
   const last = (messages[messages.length - 1]?.content || "").toLowerCase();
+  const isGreeting = mode === "greeting";
   const wantsStatus = /how.*doing|progress|behind|on track/.test(last);
   const minutesMatch = last.match(/(\d{1,3})\s*(min|minute|m)\b/);
   const minutes = minutesMatch ? parseInt(minutesMatch[1], 10) : 30;
@@ -211,18 +245,32 @@ function fallbackCoach({ messages, energy, progress, remaining, special }) {
   }
 
   const done = progress.percentComplete === 100;
-  const say = done
-    ? "You finished. Quietly huge."
-    : wantsStatus
-    ? `${progress.percentComplete}% done${progress.overdueCount ? ` — ${progress.overdueCount} to catch up, easy` : ", on pace"}.`
-    : energy === "low"
-    ? "One small thing to keep momentum:"
-    : "Here's where to start:";
+  let say;
+  if (done) {
+    say = "You finished. Quietly huge.";
+  } else if (isGreeting) {
+    const name = ""; // kept terse
+    if (daysAway != null && daysAway >= 3) {
+      say = "Welcome back. Here's one small thing to ease in:";
+    } else if (progressDelta != null && progressDelta > 0) {
+      say = `Up ${progressDelta}% since last time — keep it rolling:`;
+    } else if (progress.overdueCount > 0) {
+      say = `Caught up is closer than it feels — start here:`;
+    } else {
+      say = "You're on pace. One step to stay there:";
+    }
+  } else if (wantsStatus) {
+    say = `${progress.percentComplete}% done${progress.overdueCount ? ` — ${progress.overdueCount} to catch up, easy` : ", on pace"}.`;
+  } else if (energy === "low") {
+    say = "One small thing to keep momentum:";
+  } else {
+    say = "Here's where to start:";
+  }
 
   return {
     source: "rule-based",
     say,
-    intent: wantsStatus ? "status" : "plan",
+    intent: wantsStatus && !isGreeting ? "status" : "plan",
     nextAction: hero
       ? { title: hero.title, url: hero.url, minutes: hero.estMinutes, why: hero.overdue ? "Overdue — clear this first" : "Due soon" }
       : null,
