@@ -15,37 +15,21 @@
   root.innerHTML = `
     <div class="hero">
       <div class="orb" id="orb"></div>
-      <h1>${greet}, ${esc(boot.name)}.</h1>
-      <p class="sub">${boot.course ? esc(boot.course) + " · " : ""}Let's find your next small step.</p>
-      <div class="energy" id="energy">
-        <span class="energy-q">How's your energy?</span>
-        <button class="e" data-e="low">🌙 low</button>
-        <button class="e" data-e="ok">🙂 ok</button>
-        <button class="e" data-e="high">⚡ high</button>
-      </div>
+      <h1>${greet}, ${esc(firstName(boot.name))}.</h1>
     </div>
     <div class="chips" id="chips"></div>
     <div class="stream" id="stream"></div>
     <div class="composer">
-      <input id="q" placeholder="Ask me anything — or tell me how long you've got" autocomplete="off"/>
+      <input id="q" placeholder="Ask me anything…" autocomplete="off"/>
       <button id="send" aria-label="Send">→</button>
     </div>
-    <div class="foot">Your next step is drawn from this course's Modules.</div>
   `;
 
   const stream = document.getElementById("stream");
   const input = document.getElementById("q");
   const orb = document.getElementById("orb");
 
-  // energy one-tap
-  document.querySelectorAll("#energy .e").forEach((b) => {
-    b.onclick = () => {
-      energy = b.dataset.e;
-      document.querySelectorAll("#energy .e").forEach((x) => x.classList.toggle("on", x === b));
-      const line = energy === "low" ? "Got it — we'll keep it light." : energy === "high" ? "Love it — let's use that." : "Perfect.";
-      document.querySelector(".energy-q").textContent = line;
-    };
-  });
+  function firstName(n) { return String(n || "there").split(/[\s(]/)[0] || "there"; }
 
   const chips = [
     { label: "How am I doing?", q: "How am I doing?" },
@@ -96,9 +80,11 @@
       const data = await r.json();
       thinking.remove();
       if (!r.ok) return; // stay quiet on greeting failure; user can still ask
-      if (data.say) transcript.push({ role: "assistant", content: data.say });
-      render(data);
+      // Opening is a warm hook only — no task card. We let a task emerge naturally
+      // after a couple of exchanges.
+      if (data.say) { addAgent(data.say); transcript.push({ role: "assistant", content: data.say }); }
       if (data.progress) writeMem(data.progress.percentComplete);
+      scrollEnd();
     } catch {
       thinking.remove();
     } finally {

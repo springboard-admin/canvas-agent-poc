@@ -89,7 +89,17 @@ STYLE — HIGH SIGNAL, FEW WORDS (this matters most):
   should NOT re-list items or minutes.
 - A nudge, if any, is 3-5 words ("Start it now?").
 
-STATE-AWARE SIZING (use the energy signal + their words):
+DON'T PUSH A TASK TOO EARLY (important):
+- Do NOT hand out a task on the opening or in the first exchange unless the student
+  explicitly asks for something to do or gives a time budget ("I have 15 min").
+- Open by connecting: a warm, personal hook + a light question that gets them talking
+  and lets you read their mood/energy from their reply. Gauge energy INDIRECTLY from
+  what they say — never ask "how's your energy" outright.
+- Let a suggestion emerge naturally after a couple of turns, once it feels earned.
+  When you do suggest, keep it to ONE small thing.
+- If nudgeAllowed is false in the data, keep nextAction and plan null and just converse.
+
+STATE-AWARE SIZING (infer energy from their words; no explicit energy question):
 - low energy: pick the smallest, most passive win (a short read/video), ~5-10 min,
   just to keep momentum. Reassure that small counts.
 - ok/medium: a normal 15-30 min plan.
@@ -108,17 +118,16 @@ provided list AND are relevant to what the student said or asked. Never invent t
 
 TIME: use the provided estMinutes. Always phrase estimates as approximate ("~10 min").
 
-OPENING GREETING (when told this is the opening): the student just landed, hasn't
-asked anything. Greet with ONE personalized hook that makes them want to stay and
-finish something small right now, then attach ONE tiny next step. Use the signals:
-- daysAway large (>=3): a warm "welcome back", zero guilt, hand them the smallest
-  possible re-entry win. Lower the bar, don't raise it.
-- progressDelta > 0: name the momentum quietly ("you moved X% since last time") and
-  invite one more small step to keep it.
-- behind / progressDelta ~0 and away: make caught-up feel CLOSE and cheap — one small
-  thing, not the whole backlog.
-- on track: reinforce the streak and give them the next step so they keep coming back.
-Always end the opening pointed at exactly one do-able item. Keep intent "plan".
+OPENING GREETING (when told this is the opening): the student just landed and hasn't
+said anything. Do NOT give them a task or a plan. Open with ONE short, warm,
+personalized line + a light, genuine question that invites them to reply — so they
+start a conversation and you can read how they're doing. Use the signals for warmth,
+not pressure:
+- daysAway large (>=3): "welcome back", zero guilt, glad they're here.
+- progressDelta > 0: quietly note the momentum.
+- behind: stay encouraging and low-pressure; make it feel okay to be here.
+- on track: warm reinforcement.
+Set intent "chat", nextAction null, plan null. Keep it under ~25 words.
 
 CELEBRATION: if percentComplete is 100, warmly acknowledge they've finished — keep it
 understated and genuine.
@@ -136,9 +145,11 @@ nextAction/plan titles and urls MUST come from the provided remaining items. Pla
 
 async function runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, ctx }) {
   const model = env("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001");
+  const nudgeAllowed = mode !== "greeting" && allowNudge(messages);
   const grounding = {
     student: ctx?.givenName || ctx?.name || "there",
     energySignal: energy,
+    nudgeAllowed,
     daysAway,
     progressDeltaSinceLastVisit: progressDelta,
     progress: {
@@ -190,7 +201,25 @@ async function runCoach({ messages, energy, mode, daysAway, progressDelta, progr
   const data = await r.json();
   const text = (data.content || []).map((c) => c.text || "").join("");
   const parsed = safeJson(text);
-  return { source: "claude", ...normalize(parsed, progress) };
+  const out = normalize(parsed, progress);
+  // Hard gate: never surface a task before it's earned, even if the model tries.
+  if (!nudgeAllowed) {
+    out.nextAction = null;
+    out.plan = null;
+    if (out.intent === "plan") out.intent = "chat";
+  }
+  return { source: "claude", ...out };
+}
+
+// A task may surface once the student explicitly asks for one / gives a time budget,
+// or after they've sent at least two messages (a couple of exchanges in).
+function allowNudge(messages) {
+  const users = (messages || []).filter((m) => m && m.role === "user");
+  const lastUser = (users[users.length - 1]?.content || "").toLowerCase();
+  const explicit =
+    /\b\d{1,3}\s*(min|minute|mins|m)\b/.test(lastUser) ||
+    /what should i|what do i|give me|something to do|to do|study|next step|catch up|plan|start/.test(lastUser);
+  return explicit || users.length >= 2;
 }
 
 function safeJson(text) {
@@ -219,7 +248,20 @@ function normalize(p, progress) {
 function fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special }) {
   const last = (messages[messages.length - 1]?.content || "").toLowerCase();
   const isGreeting = mode === "greeting";
+  const nudgeAllowed = !isGreeting && allowNudge(messages);
   const wantsStatus = /how.*doing|progress|behind|on track/.test(last);
+
+  // Opening / early chit-chat: converse, don't hand out a task.
+  if (isGreeting) {
+    let hello;
+    if (daysAway != null && daysAway >= 3) hello = "Welcome back — good to see you. How's the course feeling lately?";
+    else if (progressDelta != null && progressDelta > 0) hello = "Nice to see you again — you've been moving. How's it going?";
+    else hello = "Hey — glad you're here. How are you feeling about things this week?";
+    return { source: "rule-based", say: hello, intent: "chat", nextAction: null, plan: null, special: null, celebrate: progress.percentComplete === 100 };
+  }
+  if (!nudgeAllowed && !wantsStatus) {
+    return { source: "rule-based", say: "I hear you. Tell me a bit more — how much time or energy do you have?", intent: "chat", nextAction: null, plan: null, special: null, celebrate: false };
+  }
   const minutesMatch = last.match(/(\d{1,3})\s*(min|minute|m)\b/);
   const minutes = minutesMatch ? parseInt(minutesMatch[1], 10) : 30;
 
