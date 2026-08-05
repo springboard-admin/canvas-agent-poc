@@ -178,15 +178,12 @@
   }
 
   function addProgress(p) {
-    const behind = (p.overdueCount || 0) > 0;
-    const pill = behind
-      ? `<span class="pill warn">${p.overdueCount} to catch up</span>`
-      : `<span class="pill good">on pace</span>`;
+    const unit = p.unit === "weeks" ? "weeks passed" : "done";
     stream.appendChild(card(`
       <div class="k">Where you stand</div>
-      <div class="status-line">${p.percentComplete}% of the way there ${pill}</div>
+      <div class="status-line">${p.percentComplete}% of the way there</div>
       <div class="bar"><i style="width:${p.percentComplete || 0}%"></i></div>
-      <div class="meta"><span>${p.doneItems} of ${p.totalItems} done</span><span>${p.percentComplete}%</span></div>
+      <div class="meta"><span>${p.doneItems} of ${p.totalItems} ${unit}</span><span>${p.percentComplete}%</span></div>
     `));
   }
 

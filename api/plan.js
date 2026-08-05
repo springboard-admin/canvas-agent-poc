@@ -11,6 +11,7 @@ import {
   estimateMinutes,
   findSpecialItems,
 } from "../lib/canvas.js";
+import { getWeekJourney } from "../lib/weeks.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -47,6 +48,22 @@ export default async function handler(req, res) {
     const progress = summarizeProgress(modules);
     const special = findSpecialItems(modules);
 
+    // Authoritative journey: weeks passed / total, by graded-quiz >=70% (ported
+    // from Springboard's canvas-dashboard). This overrides item-completion % as the
+    // real "where you are" signal. Degrade gracefully if grades can't be read.
+    let journey = null;
+    try {
+      journey = await getWeekJourney(courseId, studentId);
+    } catch (e) {
+      journey = null;
+    }
+    if (journey && journey.totalWeeks > 0) {
+      progress.percentComplete = journey.percentComplete;
+      progress.doneItems = journey.weeksPassed;
+      progress.totalItems = journey.totalWeeks;
+      progress.unit = "weeks";
+    }
+
     // Attach honest ~time estimates to remaining items for grounding.
     const remaining = progress.remaining.map((it) => ({
       ...it,
@@ -63,9 +80,9 @@ export default async function handler(req, res) {
 
     let agent;
     if (process.env.ANTHROPIC_API_KEY) {
-      agent = await runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, ctx });
+      agent = await runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey, ctx });
     } else {
-      agent = fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special });
+      agent = fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey });
     }
 
     res.status(200).json({ progress, ...agent });
@@ -113,6 +130,18 @@ CONVERSATION:
 - Set intent "status" when they ask how they're doing.
 - Otherwise intent "chat".
 
+WEEK JOURNEY (this is the real progress model — use it over item counts):
+- Progress = weeksPassed / totalWeeks. A week is PASSED when its graded quiz scored
+  >= passThresholdPercent (70). Reading/engagement of other items does NOT matter.
+- "How am I doing" = how many weeks passed vs total, and which week they're on.
+- When you recommend a task (and nudgeAllowed), drive the FOCUS WEEK:
+  * If focusWeek.quizzesPassed is false: recommend the reading FIRST
+    (focusWeek.reading[0], use its estMinutes), framed as "read this week's material,
+    then take the quiz". The quiz (focusWeek.quiz) is the goal after reading.
+  * nextAction = that reading item (title+url). If reading is already covered or none
+    exists, nextAction = focusWeek.quiz.
+- Never invent items — only use focusWeek.reading / focusWeek.quiz urls.
+
 SPECIAL ITEMS: only mention resume/booking/coaching items if they exist in the
 provided list AND are relevant to what the student said or asked. Never invent them.
 
@@ -143,23 +172,39 @@ Return STRICT JSON only, no prose outside it:
 }
 nextAction/plan titles and urls MUST come from the provided remaining items. Plan minutes should sum to <= the student's available time.`;
 
-async function runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, ctx }) {
+async function runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey, ctx }) {
   const model = env("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001");
   const nudgeAllowed = mode !== "greeting" && allowNudge(messages);
+  const focus = journey?.focusWeek || null;
   const grounding = {
     student: ctx?.givenName || ctx?.name || "there",
     energySignal: energy,
     nudgeAllowed,
     daysAway,
     progressDeltaSinceLastVisit: progressDelta,
+    weekJourney: journey
+      ? {
+          weeksPassed: journey.weeksPassed,
+          totalWeeks: journey.totalWeeks,
+          passThresholdPercent: journey.passThresholdPercent,
+          focusWeek: focus
+            ? {
+                week: focus.weekNumber,
+                moduleName: focus.moduleName,
+                quizzesPassed: focus.quizzesPassed,
+                reading: focus.reading.slice(0, 5).map((r) => ({ ...r, estMinutes: estimateMinutes(r) })),
+                quiz: focus.quiz,
+              }
+            : null,
+        }
+      : null,
     progress: {
       percentComplete: progress.percentComplete,
       doneItems: progress.doneItems,
       totalItems: progress.totalItems,
-      overdueCount: progress.overdueCount,
-      onTrack: progress.onTrack,
+      unit: progress.unit || "items",
     },
-    remainingItems: remaining.slice(0, 40),
+    remainingItems: remaining.slice(0, 20),
     specialItems: special,
   };
 
@@ -176,7 +221,7 @@ async function runCoach({ messages, energy, mode, daysAway, progressDelta, progr
   if (mode === "greeting") {
     anthropicMessages.push({
       role: "user",
-      content: "This is the OPENING — the student just landed and hasn't asked anything. Follow the OPENING GREETING rules: one personalized hook + one tiny next step.",
+      content: "This is the OPENING — the student just landed and hasn't asked anything. Follow the OPENING GREETING rules: a warm personalized hook + a light question. No task, no plan.",
     });
   }
 
@@ -245,7 +290,8 @@ function normalize(p, progress) {
 }
 
 // Deterministic coach when no API key — keeps the POC alive and on-message.
-function fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special }) {
+function fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey }) {
+  const focus = journey?.focusWeek || null;
   const last = (messages[messages.length - 1]?.content || "").toLowerCase();
   const isGreeting = mode === "greeting";
   const nudgeAllowed = !isGreeting && allowNudge(messages);
@@ -287,22 +333,30 @@ function fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progre
   }
 
   const done = progress.percentComplete === 100;
+
+  // Prefer the week journey: reading of the focus week first, then its quiz.
+  let nextAction = null;
+  if (focus) {
+    if (!focus.quizzesPassed && focus.reading && focus.reading[0]) {
+      const rd = focus.reading[0];
+      nextAction = { title: rd.title, url: rd.url, minutes: estimateMinutes(rd), why: `Read Week ${focus.week} material, then take the quiz` };
+    } else if (focus.quiz) {
+      nextAction = { title: focus.quiz.title, url: focus.quiz.url, minutes: 20, why: `Take the Week ${focus.week} quiz to pass it` };
+    }
+  }
+  if (!nextAction && hero) {
+    nextAction = { title: hero.title, url: hero.url, minutes: hero.estMinutes, why: hero.overdue ? "Overdue — clear this first" : "Due soon" };
+  }
+
   let say;
   if (done) {
     say = "You finished. Quietly huge.";
-  } else if (isGreeting) {
-    const name = ""; // kept terse
-    if (daysAway != null && daysAway >= 3) {
-      say = "Welcome back. Here's one small thing to ease in:";
-    } else if (progressDelta != null && progressDelta > 0) {
-      say = `Up ${progressDelta}% since last time — keep it rolling:`;
-    } else if (progress.overdueCount > 0) {
-      say = `Caught up is closer than it feels — start here:`;
-    } else {
-      say = "You're on pace. One step to stay there:";
-    }
   } else if (wantsStatus) {
-    say = `${progress.percentComplete}% done${progress.overdueCount ? ` — ${progress.overdueCount} to catch up, easy` : ", on pace"}.`;
+    say = journey && journey.totalWeeks
+      ? `${journey.weeksPassed} of ${journey.totalWeeks} weeks passed${focus ? ` — Week ${focus.week} is next` : ""}.`
+      : `${progress.percentComplete}% done.`;
+  } else if (focus && !focus.quizzesPassed && focus.reading && focus.reading[0]) {
+    say = `Week ${focus.week} next — read, then take the quiz:`;
   } else if (energy === "low") {
     say = "One small thing to keep momentum:";
   } else {
@@ -312,10 +366,8 @@ function fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progre
   return {
     source: "rule-based",
     say,
-    intent: wantsStatus && !isGreeting ? "status" : "plan",
-    nextAction: hero
-      ? { title: hero.title, url: hero.url, minutes: hero.estMinutes, why: hero.overdue ? "Overdue — clear this first" : "Due soon" }
-      : null,
+    intent: wantsStatus ? "status" : "plan",
+    nextAction,
     plan: plan.length ? plan : null,
     special: special[0] ? { kind: special[0].kind, title: special[0].title, url: special[0].url, note: special[0].kind === "resume" ? "Your resume assignment is in " + special[0].module : "Book your call in " + special[0].module } : null,
     celebrate: done,
