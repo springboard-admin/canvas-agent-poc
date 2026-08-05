@@ -85,7 +85,19 @@ export default async function handler(req, res) {
       agent = fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey });
     }
 
-    res.status(200).json({ progress, ...agent });
+    // Compact week map for the UI (which weeks passed, which is next).
+    const weeks =
+      journey && journey.totalWeeks
+        ? journey.weeks
+            .filter((w) => w.gradedItems.length > 0)
+            .map((w) => ({
+              week: w.weekNumber,
+              passed: w.passed,
+              focus: journey.focusWeek ? w.weekNumber === journey.focusWeek.weekNumber : false,
+            }))
+        : null;
+
+    res.status(200).json({ progress, weeks, ...agent });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

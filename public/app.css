@@ -96,6 +96,23 @@ body {
 @keyframes grow { from { width: 0 !important; } }
 .meta { display:flex; justify-content:space-between; color: var(--muted); font-size: 13px; }
 
+/* week map */
+.weekmap { display:flex; flex-wrap:wrap; gap:7px; margin-top:16px; }
+.wk {
+  width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center;
+  font-size:12px; font-weight:650; border:1px solid var(--stroke); color: var(--muted); background: var(--bg-2);
+  animation: rise .35s ease both;
+}
+.wk.pass { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color:#fff; border-color:transparent; }
+.wk.focus { color: var(--accent); border-color: var(--accent); background: rgba(109,92,255,0.08); box-shadow: 0 0 0 3px rgba(109,92,255,0.14); }
+.wk.todo { opacity:.7; }
+.weekmap-key { display:flex; gap:14px; margin-top:10px; color:var(--muted); font-size:12px; }
+.weekmap-key span { display:inline-flex; align-items:center; gap:5px; }
+.weekmap-key .dot { width:9px; height:9px; border-radius:3px; display:inline-block; }
+.weekmap-key .dot.pass { background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+.weekmap-key .dot.focus { background: rgba(109,92,255,0.25); border:1px solid var(--accent); }
+.weekmap-key .dot.todo { background: var(--bg-2); border:1px solid var(--stroke); }
+
 .pill { display:inline-block; font-size:12px; padding:3px 9px; border-radius:999px; margin-left:8px; vertical-align: middle; }
 .pill.warn { background: rgba(194,118,10,0.12); color: var(--warn); }
 .pill.good { background: rgba(15,157,99,0.12); color: var(--good); }

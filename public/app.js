@@ -135,7 +135,7 @@
     if (data.celebrate) addCelebrate(data.progress);
 
     // Status card only when they asked about standing.
-    if (data.intent === "status" && data.progress) addProgress(data.progress);
+    if (data.intent === "status" && data.progress) addProgress(data.progress, data.weeks);
 
     // The hero: one clear next action.
     if (data.nextAction) addNextAction(data.nextAction);
@@ -177,13 +177,29 @@
     stream.appendChild(card(`<div class="k">If you've got more time</div>${items}`));
   }
 
-  function addProgress(p) {
+  function addProgress(p, weeks) {
     const unit = p.unit === "weeks" ? "weeks passed" : "done";
+    let map = "";
+    if (Array.isArray(weeks) && weeks.length) {
+      const cells = weeks.map((w) => {
+        const cls = w.passed ? "pass" : w.focus ? "focus" : "todo";
+        const tip = w.passed ? "passed" : w.focus ? "you're here" : "not yet";
+        return `<span class="wk ${cls}" title="Week ${w.week} — ${tip}">${w.week}</span>`;
+      }).join("");
+      map = `
+        <div class="weekmap">${cells}</div>
+        <div class="weekmap-key">
+          <span><i class="dot pass"></i>passed</span>
+          <span><i class="dot focus"></i>you're here</span>
+          <span><i class="dot todo"></i>ahead</span>
+        </div>`;
+    }
     stream.appendChild(card(`
       <div class="k">Where you stand</div>
       <div class="status-line">${p.percentComplete}% of the way there</div>
       <div class="bar"><i style="width:${p.percentComplete || 0}%"></i></div>
       <div class="meta"><span>${p.doneItems} of ${p.totalItems} ${unit}</span><span>${p.percentComplete}%</span></div>
+      ${map}
     `));
   }
 
