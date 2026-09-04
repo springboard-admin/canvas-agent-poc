@@ -80,7 +80,13 @@ export default async function handler(req, res) {
 
     let agent;
     if (process.env.ANTHROPIC_API_KEY) {
-      agent = await runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey, ctx });
+      // Triage real user turns (never the opening) for emotional routing.
+      const label = mode === "greeting" ? "coach" : await triage(messages);
+      if (label === "crisis") {
+        agent = crisisHandoff(progress);
+      } else {
+        agent = await runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey, ctx, distress: label === "distress" });
+      }
     } else {
       agent = fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey });
     }
@@ -184,9 +190,9 @@ Return STRICT JSON only, no prose outside it:
 }
 nextAction/plan titles and urls MUST come from the provided remaining items. Plan minutes should sum to <= the student's available time.`;
 
-async function runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey, ctx }) {
+async function runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey, ctx, distress = false }) {
   const model = env("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001");
-  const nudgeAllowed = mode !== "greeting" && allowNudge(messages);
+  const nudgeAllowed = mode !== "greeting" && !distress && allowNudge(messages);
   const focus = journey?.focusWeek || null;
   const grounding = {
     student: ctx?.givenName || ctx?.name || "there",
@@ -194,6 +200,7 @@ async function runCoach({ messages, energy, mode, daysAway, progressDelta, progr
     nudgeAllowed,
     daysAway,
     progressDeltaSinceLastVisit: progressDelta,
+    distressSignal: distress,
     weekJourney: journey
       ? {
           weeksPassed: journey.weeksPassed,
@@ -236,7 +243,61 @@ async function runCoach({ messages, energy, mode, daysAway, progressDelta, progr
       content: "This is the OPENING — the student just landed and hasn't asked anything. Follow the OPENING GREETING rules: a warm personalized hook + a light question. No task, no plan.",
     });
   }
+  if (distress) {
+    anthropicMessages.push({
+      role: "user",
+      content: "The student sounds emotionally low or overwhelmed. Lead with warmth and genuine acknowledgement. Do NOT offer a task, plan, or next step this turn — just be human and invite them to say more. Set intent 'chat', nextAction and plan null.",
+    });
+  }
 
+  // Structured output via a forced tool call — the model's reply is schema-valid JSON,
+  // not prose we have to fish out. Retry once on failure; never fail silently.
+  let parsed = null;
+  try {
+    parsed = await callStructured({ model, system: SYSTEM, messages: anthropicMessages, tool: COACH_TOOL });
+  } catch (e) {
+    console.error("coach call failed:", e.message);
+  }
+  if (!parsed) {
+    try {
+      parsed = await callStructured({
+        model,
+        system: SYSTEM,
+        messages: [...anthropicMessages, { role: "user", content: "Reply again by calling the respond tool with valid fields." }],
+        tool: COACH_TOOL,
+      });
+    } catch (e) {
+      console.error("coach retry failed:", e.message);
+    }
+  }
+  if (!parsed) {
+    // Honest last resort — never the old cheerful filler masquerading as a real reply.
+    return {
+      source: "error",
+      say: "I hit a snag on my end just now — mind saying that again?",
+      intent: "chat",
+      nextAction: null,
+      plan: null,
+      special: null,
+      celebrate: progress.percentComplete === 100,
+    };
+  }
+
+  const out = normalize(parsed, progress);
+  // Hard gate: never surface a task before it's earned, or while the student is distressed.
+  if (distress || !nudgeAllowed) {
+    out.nextAction = null;
+    out.plan = null;
+    if (out.intent === "plan") out.intent = "chat";
+  }
+  return { source: "claude", ...out };
+}
+
+// ---- structured model calls ---------------------------------------------------
+
+// One Anthropic call that returns schema-valid JSON via a forced tool. The tool_use
+// input IS the structured object — no prose-parsing, no silent-fallback risk.
+async function callStructured({ model, system, messages, tool, maxTokens = 600 }) {
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -246,9 +307,11 @@ async function runCoach({ messages, energy, mode, daysAway, progressDelta, progr
     },
     body: JSON.stringify({
       model,
-      max_tokens: 500,
-      system: SYSTEM,
-      messages: anthropicMessages,
+      max_tokens: maxTokens,
+      system,
+      messages,
+      tools: [tool],
+      tool_choice: { type: "tool", name: tool.name },
     }),
   });
   if (!r.ok) {
@@ -256,16 +319,108 @@ async function runCoach({ messages, energy, mode, daysAway, progressDelta, progr
     throw new Error(`Anthropic ${r.status}: ${t.slice(0, 200)}`);
   }
   const data = await r.json();
-  const text = (data.content || []).map((c) => c.text || "").join("");
-  const parsed = safeJson(text);
-  const out = normalize(parsed, progress);
-  // Hard gate: never surface a task before it's earned, even if the model tries.
-  if (!nudgeAllowed) {
-    out.nextAction = null;
-    out.plan = null;
-    if (out.intent === "plan") out.intent = "chat";
+  const block = (data.content || []).find((c) => c.type === "tool_use");
+  return block ? block.input : null;
+}
+
+const ACTION_SHAPE = {
+  type: "object",
+  properties: {
+    title: { type: "string" },
+    url: { type: "string" },
+    minutes: { type: "number" },
+    why: { type: "string" },
+  },
+};
+
+const COACH_TOOL = {
+  name: "respond",
+  description: "Reply to the student. Always call this tool with your message.",
+  input_schema: {
+    type: "object",
+    properties: {
+      say: { type: "string", description: "1-3 short warm sentences." },
+      intent: { type: "string", enum: ["chat", "status", "plan"] },
+      nextAction: ACTION_SHAPE,
+      plan: { type: "array", items: ACTION_SHAPE },
+      special: {
+        type: "object",
+        properties: {
+          kind: { type: "string" },
+          title: { type: "string" },
+          url: { type: "string" },
+          note: { type: "string" },
+        },
+      },
+      celebrate: { type: "boolean" },
+    },
+    required: ["say", "intent"],
+  },
+};
+
+const TRIAGE_TOOL = {
+  name: "classify",
+  description: "Classify the student's latest message.",
+  input_schema: {
+    type: "object",
+    properties: {
+      label: { type: "string", enum: ["coach", "status", "distress", "crisis"] },
+    },
+    required: ["label"],
+  },
+};
+
+const TRIAGE_SYSTEM = `Classify the student's latest message into exactly one label:
+- crisis: self-harm, suicide, abuse, a medical or mental-health emergency, or acute distress needing a human now.
+- distress: struggling, overwhelmed, discouraged, "life is hard", burned out, low motivation — emotional but not an emergency.
+- status: asking how they're doing / their progress / where they stand.
+- coach: anything else — wants a task, a course question, or casual chat.
+When torn between distress and coach, choose distress. When torn between crisis and distress, choose crisis.`;
+
+// Cheap classifier on the latest user turn. Fail-safe: any error → "coach" (never block).
+async function triage(messages) {
+  const users = (messages || []).filter((m) => m && m.role === "user");
+  const last = users[users.length - 1]?.content;
+  if (!last) return "coach";
+  const model = env("ANTHROPIC_TRIAGE_MODEL", "claude-haiku-4-5");
+  try {
+    const out = await callStructured({
+      model,
+      system: TRIAGE_SYSTEM,
+      messages: [{ role: "user", content: String(last).slice(0, 2000) }],
+      tool: TRIAGE_TOOL,
+      maxTokens: 50,
+    });
+    const label = out?.label;
+    return ["coach", "status", "distress", "crisis"].includes(label) ? label : "coach";
+  } catch (e) {
+    console.error("triage failed:", e.message);
+    return "coach";
   }
-  return { source: "claude", ...out };
+}
+
+// Static, config-driven safe handoff for a crisis signal. No model call. Wording is a
+// safe default until Springboard provides legal-approved copy (M3).
+function crisisHandoff(progress) {
+  const url = env("SUPPORT_CONTACT_URL", "");
+  const note = env(
+    "SUPPORT_CONTACT_NOTE",
+    "You can reach a real person who can help — you don't have to carry this alone.",
+  );
+  return {
+    source: "crisis",
+    say: "I'm really glad you told me. This sounds like a lot to carry, and you don't have to handle it on your own — a real person can help.",
+    intent: "chat",
+    nextAction: null,
+    plan: null,
+    special: {
+      kind: "support",
+      title: url ? "Talk to someone now" : "Reach your Student Advisor",
+      url,
+      note,
+    },
+    celebrate: false,
+  };
 }
 
 // A task may surface once the student explicitly asks for one / gives a time budget,
@@ -292,7 +447,7 @@ function safeJson(text) {
 
 function normalize(p, progress) {
   return {
-    say: p.say || "I'm here whenever you want to make a little progress.",
+    say: p.say || "I'm here — tell me what's on your mind.",
     intent: ["chat", "status", "plan"].includes(p.intent) ? p.intent : "chat",
     nextAction: p.nextAction || null,
     plan: Array.isArray(p.plan) ? p.plan : null,
@@ -385,3 +540,6 @@ function fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progre
     celebrate: done,
   };
 }
+
+// Exported for unit tests (see test/plan.test.js). The default export is the handler.
+export { runCoach, triage, crisisHandoff, normalize };

@@ -204,11 +204,15 @@
   }
 
   function addSpecial(s) {
-    const label = s.kind === "resume" ? "Resume assignment" : "Book a call";
+    const support = s.kind === "support";
+    const header = support ? "Support" : "Worth knowing";
+    const label = support
+      ? (s.title || "Reach out")
+      : s.kind === "resume" ? "Resume assignment" : "Book a call";
     stream.appendChild(card(`
-      <div class="k">Worth knowing</div>
+      <div class="k">${header}</div>
       <div class="next-meta" style="margin-bottom:8px">${esc(s.note || label)}</div>
-      ${s.url ? `<a class="start ghost" href="${s.url}" target="_blank" rel="noopener">${label} →</a>` : ""}
+      ${s.url ? `<a class="start ghost" href="${s.url}" target="_blank" rel="noopener">${esc(label)} →</a>` : ""}
     `));
   }
 
