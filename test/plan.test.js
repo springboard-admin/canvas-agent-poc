@@ -1,9 +1,9 @@
-// M0 + M1-iter1 unit tests. Run: npm test  (node 18+; repo default node is v10, use v20)
+// M0 + M1 unit tests. Run: npm test  (node 18+; repo default node is v10, use v20)
 // The Anthropic + edge-fn calls go through global fetch, which we stub per test.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCoach, triage, crisisHandoff, normalize } from "../api/plan.js";
-import { getPhaseProgress, getDashboardHealth } from "../lib/myprogress.js";
+import { getCurriculumState, deriveState } from "../lib/myprogress.js";
 
 process.env.ANTHROPIC_API_KEY = "test-key";
 process.env.MYPROGRESS_URL = "https://example.supabase.co";
@@ -26,20 +26,33 @@ function stubFetch(responses) {
   };
 }
 
+// Shape mirrors the real curriculum_state payload (course 137 / user 187).
+const csFixture = (over = {}) => ({
+  configured: true,
+  currentWeekNumber: 18,
+  effectiveCurrentWeek: 18,
+  preWeekOne: false,
+  focusThreshold: 70,
+  focusStartWeek: 2,
+  cumulativeScore: 68,
+  weeks: [
+    { weekNumber: 1, moduleName: "Week 1 | Pharm", status: "past", isCatchUp: false, items: [{ name: "Quiz 1", url: "u1", complete: true }] },
+    { weekNumber: 2, moduleName: "Week 2 | Pharm", status: "past", isCatchUp: false, items: [{ name: "Quiz 2", url: "u2", complete: false }] },
+    { weekNumber: 9, moduleName: "Week 9 | Later", status: "future", isCatchUp: false, items: [{ name: "Quiz 9", url: "u9", complete: false }] },
+  ],
+  ...over,
+});
+
 const coachArgs = () => ({
   messages: [
     { role: "user", content: "i want something to do" },
     { role: "assistant", content: "ok" },
     { role: "user", content: "yeah give me a task" },
   ],
-  energy: null,
-  mode: "chat",
-  daysAway: null,
-  phase: { configured: true, journeyComplete: false, phasesDone: 1, totalPhases: 4, currentPhaseName: "Phase 2", focus: { name: "Phase 2", items: [] } },
-  health: { overallHealth: 70, consistencyScore: 50, overdueCount: 0, upcomingCount: 2, weeklyTrend: "steady" },
+  energy: null, mode: "chat", daysAway: null,
+  status: deriveState(csFixture()),
   progressUnavailable: false,
-  special: [],
-  ctx: {},
+  special: [], ctx: {},
 });
 
 // ---- M0 reliability + warmth ----
@@ -56,7 +69,6 @@ test("crisisHandoff returns a static support block, no task, no model call", () 
   assert.equal(out.source, "crisis");
   assert.equal(out.special.kind, "support");
   assert.equal(out.nextAction, null);
-  assert.equal(out.plan, null);
   assert.equal(out.intent, "chat");
 });
 
@@ -70,11 +82,10 @@ test("triage fails safe to coach on error", async () => {
   assert.equal(await triage([{ role: "user", content: "whatever" }]), "coach");
 });
 
-test("distress hard-gates task even when the model returns one", async () => {
-  stubFetch([toolUseResponse({ say: "That sounds heavy.", intent: "plan", nextAction: { title: "x", url: "u" }, plan: [{ title: "x" }] })]);
+test("distress hard-gates the next step", async () => {
+  stubFetch([toolUseResponse({ say: "That sounds heavy.", intent: "plan" })]);
   const out = await runCoach({ ...coachArgs(), distress: true });
   assert.equal(out.nextAction, null);
-  assert.equal(out.plan, null);
   assert.equal(out.intent, "chat");
 });
 
@@ -86,62 +97,59 @@ test("honest snag after both attempts fail — never the filler", async () => {
   assert.equal(out.nextAction, null);
 });
 
-// ---- M1 iteration 1: single-source connectors ----
+// ---- M1: single-source state ----
 
-test("progressUnavailable gates the task even if the model returns one", async () => {
-  stubFetch([toolUseResponse({ say: "Here's a task.", intent: "plan", nextAction: { title: "x", url: "u" } })]);
-  const out = await runCoach({ ...coachArgs(), phase: null, health: null, progressUnavailable: true });
+test("the next step comes from data, never from the model", async () => {
+  // Model tries to invent an item; we must ignore it and use the authoritative one.
+  stubFetch([toolUseResponse({ say: "do this", intent: "plan", nextAction: { title: "HALLUCINATED", url: "bad" } })]);
+  const out = await runCoach({ ...coachArgs() });
+  assert.equal(out.nextAction.title, "Quiz 2");
+  assert.equal(out.nextAction.url, "u2");
+});
+
+test("progressUnavailable gates the next step", async () => {
+  stubFetch([toolUseResponse({ say: "Here's a task.", intent: "plan" })]);
+  const out = await runCoach({ ...coachArgs(), status: deriveState(null), progressUnavailable: true });
   assert.equal(out.nextAction, null);
   assert.equal(out.intent, "chat");
 });
 
-test("getPhaseProgress trims to headline + active-phase not-passed items", async () => {
-  stubFetch([jsonResponse({
-    configured: true,
-    journeyComplete: false,
-    phases: [
-      { name: "P1", status: "done", items: [] },
-      { name: "P2", status: "active", items: [
-        { title: "Read A", url: "a", isPage: true, passed: false, done: false, thresholdType: "attempt" },
-        { title: "Quiz A", url: "q", isPage: false, passed: false, done: false, thresholdType: "score" },
-        { title: "Done B", url: "b", isPage: false, passed: true, done: true, thresholdType: "score" },
-      ] },
-      { name: "P3", status: "future", items: [] },
-    ],
-  })]);
-  const p = await getPhaseProgress("c1", "u1");
-  assert.equal(p.configured, true);
-  assert.equal(p.phasesDone, 1);
-  assert.equal(p.totalPhases, 3);
-  assert.equal(p.currentPhaseName, "P2");
-  assert.equal(p.focus.items.length, 2); // passed item excluded
-  assert.equal(p.focus.items[0].title, "Read A");
-  assert.equal(p.phaseMap.length, 3);
+test("deriveState: due rows only, next = first unfinished item", () => {
+  const s = deriveState(csFixture());
+  assert.equal(s.dueCount, 2);      // future week excluded
+  assert.equal(s.doneCount, 1);
+  assert.equal(s.outstanding, 1);
+  assert.equal(s.next.title, "Quiz 2");
+  assert.equal(s.next.week, 2);
+  assert.equal(s.belowBar, true);   // 68 < focusThreshold 70
+  assert.equal(s.state, "off_track");
 });
 
-test("getPhaseProgress passes through configured:false", async () => {
-  stubFetch([jsonResponse({ configured: false })]);
-  assert.deepEqual(await getPhaseProgress("c1", "u1"), { configured: false });
+test("deriveState: above the bar and one outstanding = on_track", () => {
+  const s = deriveState(csFixture({ cumulativeScore: 90 }));
+  assert.equal(s.belowBar, false);
+  assert.equal(s.state, "on_track");
 });
 
-test("getDashboardHealth exposes only the whitelisted keys", async () => {
-  stubFetch([jsonResponse({
-    user: { id: 1 }, courses: [], overallHealth: 82, completedItems: 9, totalItems: 20,
-    overdueAssignments: 1, upcomingAssignments: 3,
-    studyConsistency: { consistencyScore: 64, weeks: [] },
-    weeklyBreakdown: [{ overallHealth: 70 }, { overallHealth: 76 }, { overallHealth: 82 }],
-  })]);
-  const h = await getDashboardHealth("c1", "u1");
-  assert.deepEqual(Object.keys(h).sort(), ["consistencyScore", "overallHealth", "overdueCount", "upcomingCount", "weeklyTrend"]);
-  assert.equal(h.overallHealth, 82);
-  assert.equal(h.weeklyTrend, "improving"); // 70 -> 82
-  assert.equal(h.completedItems, undefined); // headline % never leaks
+test("deriveState: grace window suppresses any verdict", () => {
+  const s = deriveState(csFixture({ currentWeekNumber: 2 }));
+  assert.equal(s.state, "starting");
 });
 
-test("connectors throw on non-2xx so the caller degrades honest-blind", async () => {
-  // Readers throw; the handler wraps each in .catch(() => null) → honest-blind.
+test("deriveState: nothing outstanding = caught_up", () => {
+  const cs = csFixture();
+  cs.weeks[1].items[0].complete = true;
+  const s = deriveState({ ...cs, cumulativeScore: 90 });
+  assert.equal(s.state, "caught_up");
+  assert.equal(s.next, null);
+});
+
+test("deriveState: unreadable progress = unknown", () => {
+  assert.equal(deriveState(null).state, "unknown");
+  assert.equal(deriveState({ configured: false }).state, "unknown");
+});
+
+test("getCurriculumState throws on non-2xx so the caller degrades honest-blind", async () => {
   stubFetch([jsonResponse({ error: "boom" }, false, 500)]);
-  await assert.rejects(() => getPhaseProgress("c1", "u1"));
-  stubFetch([jsonResponse({ error: "boom" }, false, 500)]);
-  await assert.rejects(() => getDashboardHealth("c1", "u1"));
+  await assert.rejects(() => getCurriculumState("137", "187"));
 });

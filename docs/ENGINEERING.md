@@ -22,15 +22,25 @@ Per **one** `POST /api/plan` turn (i.e. each student message; the opening greeti
 |---|---|---|
 | **Anthropic — triage** (Haiku) | every non-greeting turn | ~1 cheap call, tiny in/out (`ANTHROPIC_TRIAGE_MODEL`, default `claude-haiku-4-5`). |
 | **Anthropic — coach** (`ANTHROPIC_MODEL`, Sonnet 5) | every turn that isn't crisis | 1 call. Crisis turns make **zero** model calls (static handoff). Retry adds ≤1 more only on a malformed reply. |
-| **My Progress edge fns ×2** | **every** `/api/plan` turn | `phase-config` + `canvas-dashboard` on the lovable Supabase project. = 2 Supabase function invocations + server-side Canvas API reads, per turn. **This is the main added recurring compute in M1.** Free-tier fine at POC traffic; revisit if turns scale. |
+| **My Progress edge fn ×1** | **every** `/api/plan` turn | `phase-config?action=curriculum_state` on the lovable Supabase project. 1 invocation + server-side Canvas reads (course structure cached 1h there). Was 2 calls in M1-iter1; `canvas-dashboard` and `student_progress` were dropped in iter2. |
 | Vercel function invocation | every turn | the `/api/plan` handler itself. |
 
 **No database, no cron, no background jobs, no persistence** in the poc today (stateless).
 Memory (M2) will add storage — cost it here when it lands.
 
-### Known frugality trade-off (open, not yet optimized)
+### Known frugality trade-offs (open, not yet optimized)
 
-The 2 edge-fn calls fire on **every** turn, even pure chit-chat that never needs progress.
-Deliberately *not* optimized yet (conditional fetching adds branching = fat for little gain at
-POC traffic). Revisit only if invocation volume becomes a real cost — likeliest lever: a short
-per-session cache once M2 adds a store. Do not add caching machinery before then.
+- The edge-fn call fires on **every** turn, even chit-chat that never needs progress.
+  Deliberately *not* optimized (conditional fetching = branching for little gain at POC
+  traffic). Revisit only if invocation volume becomes a real cost — likeliest lever: a short
+  per-session cache once M2 adds a store. Don't add caching machinery before then.
+- The coach model now returns only `say`/`intent`/`special` — the next step, item rows and
+  status card are built from authoritative data. Smaller output per turn (cheaper) and
+  nothing factual can be hallucinated. Keep it that way: don't move facts back into the
+  model's output.
+
+### Invariant worth protecting
+
+Progress/health is read from the My Progress app and **never recomputed here**. If the agent
+ever disagrees with the student's screen, trust is gone. `lib/myprogress.js` is the only place
+that data enters; `deriveState()` is pure and the model never touches the numbers.

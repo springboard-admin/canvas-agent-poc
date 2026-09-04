@@ -54,8 +54,8 @@
   function readMem() {
     try { return JSON.parse(localStorage.getItem(MEM_KEY) || "null"); } catch { return null; }
   }
-  function writeMem(pct) {
-    try { localStorage.setItem(MEM_KEY, JSON.stringify({ ts: Date.now(), pct })); } catch { /* storage blocked */ }
+  function touchMem() {
+    try { localStorage.setItem(MEM_KEY, JSON.stringify({ ts: Date.now() })); } catch { /* storage blocked */ }
   }
 
   // ---- proactive personalized greeting on load ----
@@ -66,7 +66,6 @@
     const signals = {};
     if (mem && typeof mem.ts === "number") {
       signals.daysAway = Math.floor((Date.now() - mem.ts) / 86400000);
-      signals.lastPercent = mem.pct;
     }
     busy = true;
     const thinking = addThinking();
@@ -83,7 +82,7 @@
       // Opening is a warm hook only — no task card. We let a task emerge naturally
       // after a couple of exchanges.
       if (data.say) { addAgent(data.say); transcript.push({ role: "assistant", content: data.say }); }
-      if (data.progress) writeMem(data.progress.percentComplete);
+      touchMem();
       scrollEnd();
     } catch {
       thinking.remove();
@@ -119,7 +118,7 @@
       if (!r.ok) { addError(data.error || "Something went wrong."); return; }
       transcript.push({ role: "assistant", content: data.say || "" });
       render(data);
-      if (data.progress) writeMem(data.progress.percentComplete);
+      touchMem();
     } catch (e) {
       thinking.remove();
       addError(e.message);
@@ -132,18 +131,13 @@
   function render(data) {
     if (data.say) addAgent(data.say);
 
-    if (data.celebrate) addCelebrate(data.progress);
+    if (data.celebrate) addCelebrate();
 
     // Status card only when they asked about standing.
-    if (data.intent === "status" && data.progress) addProgress(data.progress, data.weeks, data.health);
+    if (data.intent === "status" && data.status) addStatus(data.status);
 
     // The hero: one clear next action.
     if (data.nextAction) addNextAction(data.nextAction);
-
-    // Secondary items, quietly.
-    if (Array.isArray(data.plan) && data.plan.length > (data.nextAction ? 1 : 0)) {
-      addPlan(data.plan, data.nextAction);
-    }
 
     if (data.special) addSpecial(data.special);
 
@@ -162,51 +156,28 @@
     stream.appendChild(el);
   }
 
-  function addPlan(plan, hero) {
-    const items = plan
-      .filter((it) => !hero || it.title !== hero.title)
-      .map((it) => `
+  // Mirrors My Progress: a named state, then the real rows — clickable, with what's
+  // left in each. No score: the student is never shown one there either.
+  function addStatus(s) {
+    const rows = (s.rows || []).map((r) => {
+      const left = r.items.filter((i) => !i.complete);
+      const detail = r.done
+        ? "done"
+        : left.map((i) => (i.url ? `<a href="${i.url}" target="_blank" rel="noopener">${esc(i.name)}</a>` : esc(i.name))).join(", ");
+      return `
         <div class="plan-item">
-          <div class="time">${it.minutes ? "~" + it.minutes + " min" : ""}</div>
+          <div class="time">${r.done ? "✓" : ""}</div>
           <div>
-            ${it.url ? `<a href="${it.url}" target="_blank" rel="noopener">${esc(it.title)}</a>` : `<span>${esc(it.title)}</span>`}
-            ${it.why ? `<div class="why">${esc(it.why)}</div>` : ""}
+            <span>Week ${r.week}</span>
+            <div class="why">${detail}</div>
           </div>
-        </div>`).join("");
-    if (!items) return;
-    stream.appendChild(card(`<div class="k">If you've got more time</div>${items}`));
-  }
-
-  function addProgress(p, weeks, health) {
-    const total = p.totalPhases || 0;
-    const done = p.phasesDone || 0;
-    const pct = total ? Math.round((done / total) * 100) : 0;
-    let map = "";
-    if (Array.isArray(weeks) && weeks.length) {
-      const cells = weeks.map((w, i) => {
-        const cls = w.passed ? "pass" : w.focus ? "focus" : "todo";
-        const tip = w.passed ? "done" : w.focus ? "you're here" : "ahead";
-        return `<span class="wk ${cls}" title="${esc(w.name || ("Phase " + (i + 1)))} — ${tip}">${i + 1}</span>`;
-      }).join("");
-      map = `
-        <div class="weekmap">${cells}</div>
-        <div class="weekmap-key">
-          <span><i class="dot pass"></i>done</span>
-          <span><i class="dot focus"></i>you're here</span>
-          <span><i class="dot todo"></i>ahead</span>
         </div>`;
-    }
-    const healthLine =
-      health && typeof health.overallHealth === "number"
-        ? `<div class="meta"><span>health ${health.overallHealth}/100${health.overdueCount ? " · " + health.overdueCount + " overdue" : ""}</span></div>`
-        : "";
+    }).join("");
     stream.appendChild(card(`
       <div class="k">Where you stand</div>
-      <div class="status-line">${done} of ${total} phases</div>
-      <div class="bar"><i style="width:${pct}%"></i></div>
-      <div class="meta"><span>${p.currentPhaseName ? esc(p.currentPhaseName) + " is next" : "your journey"}</span><span>${pct}%</span></div>
-      ${healthLine}
-      ${map}
+      <div class="status-line">${esc(s.label)}</div>
+      <div class="meta"><span>${s.doneCount} of ${s.dueCount} weeks finished</span></div>
+      ${rows}
     `));
   }
 
@@ -223,7 +194,7 @@
     `));
   }
 
-  function addCelebrate(p) {
+  function addCelebrate() {
     const el = card(`<div class="celebrate">✨ You finished the course.</div><div class="reason">You did it a little at a time — that's the whole trick.</div>`);
     el.classList.add("celebrate-card");
     stream.appendChild(el);
