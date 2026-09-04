@@ -1,29 +1,23 @@
-// M0 unit tests — reliability + warmth. Run: npm test
-// The Anthropic call goes through global fetch, which we stub per test.
+// M0 + M1-iter1 unit tests. Run: npm test  (node 18+; repo default node is v10, use v20)
+// The Anthropic + edge-fn calls go through global fetch, which we stub per test.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCoach, triage, crisisHandoff, normalize } from "../api/plan.js";
+import { getPhaseProgress, getDashboardHealth } from "../lib/myprogress.js";
 
-process.env.ANTHROPIC_API_KEY = "test-key"; // callStructured reads this for the header
+process.env.ANTHROPIC_API_KEY = "test-key";
+process.env.MYPROGRESS_URL = "https://example.supabase.co";
+process.env.MYPROGRESS_ANON_KEY = "anon-test";
 
-// Build a fake Anthropic HTTP response whose content is a single tool_use block.
 function toolUseResponse(input) {
-  return {
-    ok: true,
-    json: async () => ({ content: [{ type: "tool_use", name: "respond", input }] }),
-    text: async () => "",
-  };
+  return { ok: true, json: async () => ({ content: [{ type: "tool_use", name: "respond", input }] }), text: async () => "" };
 }
-// A response with NO tool_use block (simulates the model failing to produce structure).
 function noToolResponse() {
-  return {
-    ok: true,
-    json: async () => ({ content: [{ type: "text", text: "oops, prose not JSON" }] }),
-    text: async () => "",
-  };
+  return { ok: true, json: async () => ({ content: [{ type: "text", text: "prose not JSON" }] }), text: async () => "" };
 }
-
-// Queue a sequence of fetch responses; each fetch() call shifts the next one.
+function jsonResponse(body, ok = true, status = 200) {
+  return { ok, status, json: async () => body, text: async () => "" };
+}
 function stubFetch(responses) {
   const queue = [...responses];
   globalThis.fetch = async () => {
@@ -32,7 +26,7 @@ function stubFetch(responses) {
   };
 }
 
-const baseCoachArgs = () => ({
+const coachArgs = () => ({
   messages: [
     { role: "user", content: "i want something to do" },
     { role: "assistant", content: "ok" },
@@ -41,25 +35,24 @@ const baseCoachArgs = () => ({
   energy: null,
   mode: "chat",
   daysAway: null,
-  progressDelta: null,
-  progress: { percentComplete: 20, doneItems: 1, totalItems: 5, unit: "weeks", remaining: [] },
-  remaining: [],
+  phase: { configured: true, journeyComplete: false, phasesDone: 1, totalPhases: 4, currentPhaseName: "Phase 2", focus: { name: "Phase 2", items: [] } },
+  health: { overallHealth: 70, consistencyScore: 50, overdueCount: 0, upcomingCount: 2, weeklyTrend: "steady" },
+  progressUnavailable: false,
   special: [],
-  journey: null,
   ctx: {},
 });
 
+// ---- M0 reliability + warmth ----
+
 test("normalize never emits the old cheerful filler", () => {
-  const out = normalize({}, { percentComplete: 20 });
+  const out = normalize({});
   assert.notEqual(out.say, "I'm here whenever you want to make a little progress.");
-  assert.equal(typeof out.say, "string");
-  assert.equal(out.intent, "chat"); // unknown intent clamps to chat
+  assert.equal(out.intent, "chat");
 });
 
-test("crisisHandoff returns a static support block and no task, no model call", () => {
-  // No fetch stub installed on purpose — a crisis must never hit the model.
+test("crisisHandoff returns a static support block, no task, no model call", () => {
   globalThis.fetch = async () => { throw new Error("crisis must not call the model"); };
-  const out = crisisHandoff({ percentComplete: 20 });
+  const out = crisisHandoff();
   assert.equal(out.source, "crisis");
   assert.equal(out.special.kind, "support");
   assert.equal(out.nextAction, null);
@@ -69,36 +62,86 @@ test("crisisHandoff returns a static support block and no task, no model call", 
 
 test("triage returns the model's label", async () => {
   stubFetch([toolUseResponse({ label: "distress" })]);
-  const label = await triage([{ role: "user", content: "life has been really hard lately" }]);
-  assert.equal(label, "distress");
+  assert.equal(await triage([{ role: "user", content: "life has been hard" }]), "distress");
 });
 
 test("triage fails safe to coach on error", async () => {
   globalThis.fetch = async () => { throw new Error("network down"); };
-  const label = await triage([{ role: "user", content: "whatever" }]);
-  assert.equal(label, "coach");
+  assert.equal(await triage([{ role: "user", content: "whatever" }]), "coach");
 });
 
 test("distress hard-gates task even when the model returns one", async () => {
-  stubFetch([
-    toolUseResponse({
-      say: "That sounds heavy.",
-      intent: "plan",
-      nextAction: { title: "Do the quiz", url: "u", minutes: 20 },
-      plan: [{ title: "Do the quiz", url: "u", minutes: 20 }],
-    }),
-  ]);
-  const out = await runCoach({ ...baseCoachArgs(), distress: true });
+  stubFetch([toolUseResponse({ say: "That sounds heavy.", intent: "plan", nextAction: { title: "x", url: "u" }, plan: [{ title: "x" }] })]);
+  const out = await runCoach({ ...coachArgs(), distress: true });
   assert.equal(out.nextAction, null);
   assert.equal(out.plan, null);
   assert.equal(out.intent, "chat");
-  assert.equal(out.say, "That sounds heavy.");
 });
 
 test("honest snag after both attempts fail — never the filler", async () => {
-  stubFetch([noToolResponse(), noToolResponse()]); // first call + one retry both fail
-  const out = await runCoach({ ...baseCoachArgs() });
+  stubFetch([noToolResponse(), noToolResponse()]);
+  const out = await runCoach({ ...coachArgs() });
   assert.equal(out.source, "error");
   assert.match(out.say, /snag/i);
   assert.equal(out.nextAction, null);
+});
+
+// ---- M1 iteration 1: single-source connectors ----
+
+test("progressUnavailable gates the task even if the model returns one", async () => {
+  stubFetch([toolUseResponse({ say: "Here's a task.", intent: "plan", nextAction: { title: "x", url: "u" } })]);
+  const out = await runCoach({ ...coachArgs(), phase: null, health: null, progressUnavailable: true });
+  assert.equal(out.nextAction, null);
+  assert.equal(out.intent, "chat");
+});
+
+test("getPhaseProgress trims to headline + active-phase not-passed items", async () => {
+  stubFetch([jsonResponse({
+    configured: true,
+    journeyComplete: false,
+    phases: [
+      { name: "P1", status: "done", items: [] },
+      { name: "P2", status: "active", items: [
+        { title: "Read A", url: "a", isPage: true, passed: false, done: false, thresholdType: "attempt" },
+        { title: "Quiz A", url: "q", isPage: false, passed: false, done: false, thresholdType: "score" },
+        { title: "Done B", url: "b", isPage: false, passed: true, done: true, thresholdType: "score" },
+      ] },
+      { name: "P3", status: "future", items: [] },
+    ],
+  })]);
+  const p = await getPhaseProgress("c1", "u1");
+  assert.equal(p.configured, true);
+  assert.equal(p.phasesDone, 1);
+  assert.equal(p.totalPhases, 3);
+  assert.equal(p.currentPhaseName, "P2");
+  assert.equal(p.focus.items.length, 2); // passed item excluded
+  assert.equal(p.focus.items[0].title, "Read A");
+  assert.equal(p.phaseMap.length, 3);
+});
+
+test("getPhaseProgress passes through configured:false", async () => {
+  stubFetch([jsonResponse({ configured: false })]);
+  assert.deepEqual(await getPhaseProgress("c1", "u1"), { configured: false });
+});
+
+test("getDashboardHealth exposes only the whitelisted keys", async () => {
+  stubFetch([jsonResponse({
+    user: { id: 1 }, courses: [], overallHealth: 82, completedItems: 9, totalItems: 20,
+    overdueAssignments: 1, upcomingAssignments: 3,
+    studyConsistency: { consistencyScore: 64, weeks: [] },
+    weeklyBreakdown: [{ overallHealth: 70 }, { overallHealth: 76 }, { overallHealth: 82 }],
+  })]);
+  const h = await getDashboardHealth("c1", "u1");
+  assert.deepEqual(Object.keys(h).sort(), ["consistencyScore", "overallHealth", "overdueCount", "upcomingCount", "weeklyTrend"]);
+  assert.equal(h.overallHealth, 82);
+  assert.equal(h.weeklyTrend, "improving"); // 70 -> 82
+  assert.equal(h.completedItems, undefined); // headline % never leaks
+});
+
+test("connectors throw on non-2xx so the caller degrades honest-blind", async () => {
+  // Readers throw; the handler wraps each in .catch(() => null) → honest-blind.
+  stubFetch([jsonResponse({ error: "boom" }, false, 500)]);
+  await assert.rejects(() => getPhaseProgress("c1", "u1"));
+  stubFetch([jsonResponse({ error: "boom" }, false, 500)]);
+  await assert.rejects(() => getDashboardHealth("c1", "u1"));
 });

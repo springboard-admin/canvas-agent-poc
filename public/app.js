@@ -135,7 +135,7 @@
     if (data.celebrate) addCelebrate(data.progress);
 
     // Status card only when they asked about standing.
-    if (data.intent === "status" && data.progress) addProgress(data.progress, data.weeks);
+    if (data.intent === "status" && data.progress) addProgress(data.progress, data.weeks, data.health);
 
     // The hero: one clear next action.
     if (data.nextAction) addNextAction(data.nextAction);
@@ -155,7 +155,7 @@
     const el = card(`
       <div class="k">Your next step</div>
       <div class="next-title">${esc(a.title)}</div>
-      <div class="next-meta">~${a.minutes || "?"} min${a.why ? " · " + esc(a.why) : ""}</div>
+      <div class="next-meta">${a.minutes ? "~" + a.minutes + " min" : ""}${a.minutes && a.why ? " · " : ""}${a.why ? esc(a.why) : ""}</div>
       ${a.url ? `<a class="start" href="${a.url}" target="_blank" rel="noopener">Start now →</a>` : ""}
     `);
     el.classList.add("hero-card");
@@ -167,7 +167,7 @@
       .filter((it) => !hero || it.title !== hero.title)
       .map((it) => `
         <div class="plan-item">
-          <div class="time">~${it.minutes || "?"} min</div>
+          <div class="time">${it.minutes ? "~" + it.minutes + " min" : ""}</div>
           <div>
             ${it.url ? `<a href="${it.url}" target="_blank" rel="noopener">${esc(it.title)}</a>` : `<span>${esc(it.title)}</span>`}
             ${it.why ? `<div class="why">${esc(it.why)}</div>` : ""}
@@ -177,28 +177,35 @@
     stream.appendChild(card(`<div class="k">If you've got more time</div>${items}`));
   }
 
-  function addProgress(p, weeks) {
-    const unit = p.unit === "weeks" ? "weeks passed" : "done";
+  function addProgress(p, weeks, health) {
+    const total = p.totalPhases || 0;
+    const done = p.phasesDone || 0;
+    const pct = total ? Math.round((done / total) * 100) : 0;
     let map = "";
     if (Array.isArray(weeks) && weeks.length) {
-      const cells = weeks.map((w) => {
+      const cells = weeks.map((w, i) => {
         const cls = w.passed ? "pass" : w.focus ? "focus" : "todo";
-        const tip = w.passed ? "passed" : w.focus ? "you're here" : "not yet";
-        return `<span class="wk ${cls}" title="Week ${w.week} — ${tip}">${w.week}</span>`;
+        const tip = w.passed ? "done" : w.focus ? "you're here" : "ahead";
+        return `<span class="wk ${cls}" title="${esc(w.name || ("Phase " + (i + 1)))} — ${tip}">${i + 1}</span>`;
       }).join("");
       map = `
         <div class="weekmap">${cells}</div>
         <div class="weekmap-key">
-          <span><i class="dot pass"></i>passed</span>
+          <span><i class="dot pass"></i>done</span>
           <span><i class="dot focus"></i>you're here</span>
           <span><i class="dot todo"></i>ahead</span>
         </div>`;
     }
+    const healthLine =
+      health && typeof health.overallHealth === "number"
+        ? `<div class="meta"><span>health ${health.overallHealth}/100${health.overdueCount ? " · " + health.overdueCount + " overdue" : ""}</span></div>`
+        : "";
     stream.appendChild(card(`
       <div class="k">Where you stand</div>
-      <div class="status-line">${p.percentComplete}% of the way there</div>
-      <div class="bar"><i style="width:${p.percentComplete || 0}%"></i></div>
-      <div class="meta"><span>${p.doneItems} of ${p.totalItems} ${unit}</span><span>${p.percentComplete}%</span></div>
+      <div class="status-line">${done} of ${total} phases</div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      <div class="meta"><span>${p.currentPhaseName ? esc(p.currentPhaseName) + " is next" : "your journey"}</span><span>${pct}%</span></div>
+      ${healthLine}
       ${map}
     `));
   }

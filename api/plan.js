@@ -5,13 +5,8 @@
 //   { say, intent, nextAction, plan, special, celebrate }
 // Progress numbers are authoritative from the server, never invented by the model.
 import { env, readState, parseCookies } from "../lib/lti.js";
-import {
-  getModules,
-  summarizeProgress,
-  estimateMinutes,
-  findSpecialItems,
-} from "../lib/canvas.js";
-import { getWeekJourney } from "../lib/weeks.js";
+import { getModules, findSpecialItems } from "../lib/canvas.js";
+import { getPhaseProgress, getDashboardHealth } from "../lib/myprogress.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -45,36 +40,17 @@ export default async function handler(req, res) {
     const studentId = ctx?.userId;
 
     const modules = await getModules(courseId, studentId);
-    const progress = summarizeProgress(modules);
     const special = findSpecialItems(modules);
 
-    // Authoritative journey: weeks passed / total, by graded-quiz >=70% (ported
-    // from Springboard's canvas-dashboard). This overrides item-completion % as the
-    // real "where you are" signal. Degrade gracefully if grades can't be read.
-    let journey = null;
-    try {
-      journey = await getWeekJourney(courseId, studentId);
-    } catch (e) {
-      journey = null;
-    }
-    if (journey && journey.totalWeeks > 0) {
-      progress.percentComplete = journey.percentComplete;
-      progress.doneItems = journey.weeksPassed;
-      progress.totalItems = journey.totalWeeks;
-      progress.unit = "weeks";
-    }
+    // Single source of truth = the My Progress app (exactly what the student sees on
+    // screen). Both readers degrade to null; we never re-derive progress locally, so the
+    // agent can never contradict the dashboard. If both are blind → honest-blind.
+    const [phase, health] = await Promise.all([
+      getPhaseProgress(courseId, studentId).catch(() => null),
+      getDashboardHealth(courseId, studentId).catch(() => null),
+    ]);
+    const progressUnavailable = !(phase && phase.configured) && !health;
 
-    // Attach honest ~time estimates to remaining items for grounding.
-    const remaining = progress.remaining.map((it) => ({
-      ...it,
-      estMinutes: estimateMinutes(it),
-    }));
-
-    // progressDelta = points gained since their last visit (from client localStorage).
-    const progressDelta =
-      typeof signals.lastPercent === "number"
-        ? progress.percentComplete - signals.lastPercent
-        : null;
     const daysAway =
       typeof signals.daysAway === "number" ? signals.daysAway : null;
 
@@ -83,27 +59,22 @@ export default async function handler(req, res) {
       // Triage real user turns (never the opening) for emotional routing.
       const label = mode === "greeting" ? "coach" : await triage(messages);
       if (label === "crisis") {
-        agent = crisisHandoff(progress);
+        agent = crisisHandoff();
       } else {
-        agent = await runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey, ctx, distress: label === "distress" });
+        agent = await runCoach({ messages, energy, mode, daysAway, phase, health, progressUnavailable, special, ctx, distress: label === "distress" });
       }
     } else {
-      agent = fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey });
+      agent = fallbackCoach({ messages, phase, health, progressUnavailable, special });
     }
 
-    // Compact week map for the UI (which weeks passed, which is next).
-    const weeks =
-      journey && journey.totalWeeks
-        ? journey.weeks
-            .filter((w) => w.gradedItems.length > 0)
-            .map((w) => ({
-              week: w.weekNumber,
-              passed: w.passed,
-              focus: journey.focusWeek ? w.weekNumber === journey.focusWeek.weekNumber : false,
-            }))
+    // Status card for the UI: one cell per phase (what the student sees), plus headline.
+    const weeks = phase && phase.configured ? phase.phaseMap : null;
+    const progress =
+      phase && phase.configured
+        ? { phasesDone: phase.phasesDone, totalPhases: phase.totalPhases, currentPhaseName: phase.currentPhaseName, journeyComplete: phase.journeyComplete }
         : null;
 
-    res.status(200).json({ progress, weeks, ...agent });
+    res.status(200).json({ progress, weeks, health, ...agent });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -148,22 +119,27 @@ CONVERSATION:
 - Set intent "status" when they ask how they're doing.
 - Otherwise intent "chat".
 
-WEEK JOURNEY (this is the real progress model — use it over item counts):
-- Progress = weeksPassed / totalWeeks. A week is PASSED when its graded quiz scored
-  >= passThresholdPercent (70). Reading/engagement of other items does NOT matter.
-- "How am I doing" = how many weeks passed vs total, and which week they're on.
-- When you recommend a task (and nudgeAllowed), drive the FOCUS WEEK:
-  * If focusWeek.quizzesPassed is false: recommend the reading FIRST
-    (focusWeek.reading[0], use its estMinutes), framed as "read this week's material,
-    then take the quiz". The quiz (focusWeek.quiz) is the goal after reading.
-  * nextAction = that reading item (title+url). If reading is already covered or none
-    exists, nextAction = focusWeek.quiz.
-- Never invent items — only use focusWeek.reading / focusWeek.quiz urls.
+PROGRESS — SINGLE SOURCE OF TRUTH (this is what the student sees in "My Progress"):
+- All progress + health comes ONLY from the provided data. NEVER invent or estimate a
+  number. Speak the SAME numbers the student sees on their screen — a contradiction
+  breaks trust.
+- "progress" = phase journey: phasesDone / totalPhases, currentPhaseName, journeyComplete.
+  "How am I doing" answers from this plus "health".
+- "health" = overallHealth (0-100), consistencyScore, overdueCount, upcomingCount,
+  weeklyTrend (improving/steady/slipping). Use these to read how they're really doing.
+- If "progressUnavailable" is true, you CANNOT see their progress right now: say so
+  plainly, don't invent numbers, and keep the conversation going warmly.
+- When you recommend a task (and nudgeAllowed), drive the FOCUS phase:
+  * focus.items are the not-yet-passed items of the active phase. Prefer an item with
+    isPage true (a reading) FIRST, framed as "read this, then the graded item"; otherwise
+    the first focus item.
+  * nextAction = that item (title + url). Never invent items — only use focus.items urls.
 
 SPECIAL ITEMS: only mention resume/booking/coaching items if they exist in the
 provided list AND are relevant to what the student said or asked. Never invent them.
 
-TIME: use the provided estMinutes. Always phrase estimates as approximate ("~10 min").
+TIME: only give a minutes estimate if you're confident; otherwise omit minutes. Always
+phrase any estimate as approximate ("~10 min").
 
 OPENING GREETING (when told this is the opening): the student just landed and hasn't
 said anything. Do NOT give them a task or a plan. Open with ONE short, warm,
@@ -171,12 +147,12 @@ personalized line + a light, genuine question that invites them to reply — so 
 start a conversation and you can read how they're doing. Use the signals for warmth,
 not pressure:
 - daysAway large (>=3): "welcome back", zero guilt, glad they're here.
-- progressDelta > 0: quietly note the momentum.
-- behind: stay encouraging and low-pressure; make it feel okay to be here.
-- on track: warm reinforcement.
+- behind (low health / overdue): stay encouraging and low-pressure; make it feel okay to
+  be here.
+- on track (healthy): warm reinforcement.
 Set intent "chat", nextAction null, plan null. Keep it under ~25 words.
 
-CELEBRATION: if percentComplete is 100, warmly acknowledge they've finished — keep it
+CELEBRATION: if journeyComplete is true, warmly acknowledge they've finished — keep it
 understated and genuine.
 
 Return STRICT JSON only, no prose outside it:
@@ -188,42 +164,30 @@ Return STRICT JSON only, no prose outside it:
   "special": { "kind": "resume"|"booking", "title": "...", "url": "...", "note": "one line" } | null,
   "celebrate": false
 }
-nextAction/plan titles and urls MUST come from the provided remaining items. Plan minutes should sum to <= the student's available time.`;
+nextAction/plan titles and urls MUST come from the provided focus.items. Never invent items or numbers.`;
 
-async function runCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey, ctx, distress = false }) {
+async function runCoach({ messages, energy, mode, daysAway, phase, health, progressUnavailable, special, ctx, distress = false }) {
   const model = env("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001");
   const nudgeAllowed = mode !== "greeting" && !distress && allowNudge(messages);
-  const focus = journey?.focusWeek || null;
+  const celebrate = !!(phase && phase.configured && phase.journeyComplete);
   const grounding = {
     student: ctx?.givenName || ctx?.name || "there",
     energySignal: energy,
     nudgeAllowed,
     daysAway,
-    progressDeltaSinceLastVisit: progressDelta,
     distressSignal: distress,
-    weekJourney: journey
-      ? {
-          weeksPassed: journey.weeksPassed,
-          totalWeeks: journey.totalWeeks,
-          passThresholdPercent: journey.passThresholdPercent,
-          focusWeek: focus
-            ? {
-                week: focus.weekNumber,
-                moduleName: focus.moduleName,
-                quizzesPassed: focus.quizzesPassed,
-                reading: focus.reading.slice(0, 5).map((r) => ({ ...r, estMinutes: estimateMinutes(r) })),
-                quiz: focus.quiz,
-              }
-            : null,
-        }
-      : null,
-    progress: {
-      percentComplete: progress.percentComplete,
-      doneItems: progress.doneItems,
-      totalItems: progress.totalItems,
-      unit: progress.unit || "items",
-    },
-    remainingItems: remaining.slice(0, 20),
+    progressUnavailable: !!progressUnavailable,
+    progress:
+      phase && phase.configured
+        ? {
+            phasesDone: phase.phasesDone,
+            totalPhases: phase.totalPhases,
+            currentPhaseName: phase.currentPhaseName,
+            journeyComplete: phase.journeyComplete,
+          }
+        : null,
+    focus: phase && phase.configured ? phase.focus : null,
+    health: health || null,
     specialItems: special,
   };
 
@@ -279,13 +243,14 @@ async function runCoach({ messages, energy, mode, daysAway, progressDelta, progr
       nextAction: null,
       plan: null,
       special: null,
-      celebrate: progress.percentComplete === 100,
+      celebrate,
     };
   }
 
-  const out = normalize(parsed, progress);
-  // Hard gate: never surface a task before it's earned, or while the student is distressed.
-  if (distress || !nudgeAllowed) {
+  const out = normalize(parsed, celebrate);
+  // Hard gate: never surface a task before it's earned, while distressed, or while we
+  // can't see the student's progress (no item to honestly recommend).
+  if (distress || !nudgeAllowed || progressUnavailable) {
     out.nextAction = null;
     out.plan = null;
     if (out.intent === "plan") out.intent = "chat";
@@ -401,7 +366,7 @@ async function triage(messages) {
 
 // Static, config-driven safe handoff for a crisis signal. No model call. Wording is a
 // safe default until Springboard provides legal-approved copy (M3).
-function crisisHandoff(progress) {
+function crisisHandoff() {
   const url = env("SUPPORT_CONTACT_URL", "");
   const note = env(
     "SUPPORT_CONTACT_NOTE",
@@ -445,99 +410,57 @@ function safeJson(text) {
   }
 }
 
-function normalize(p, progress) {
+function normalize(p, celebrate = false) {
   return {
     say: p.say || "I'm here — tell me what's on your mind.",
     intent: ["chat", "status", "plan"].includes(p.intent) ? p.intent : "chat",
     nextAction: p.nextAction || null,
     plan: Array.isArray(p.plan) ? p.plan : null,
     special: p.special || null,
-    celebrate: p.celebrate === true || progress.percentComplete === 100,
+    celebrate: p.celebrate === true || celebrate === true,
   };
 }
 
-// Deterministic coach when no API key — keeps the POC alive and on-message.
-function fallbackCoach({ messages, energy, mode, daysAway, progressDelta, progress, remaining, special, journey }) {
-  const focus = journey?.focusWeek || null;
+// Deterministic coach when no API key — keeps the POC alive, on the same single-source
+// data (phase + health), honest-blind when progress can't be read.
+function fallbackCoach({ messages, phase, health, progressUnavailable, special }) {
   const last = (messages[messages.length - 1]?.content || "").toLowerCase();
-  const isGreeting = mode === "greeting";
-  const nudgeAllowed = !isGreeting && allowNudge(messages);
+  const nudgeAllowed = allowNudge(messages);
   const wantsStatus = /how.*doing|progress|behind|on track/.test(last);
+  const configured = !!(phase && phase.configured);
+  const focus = configured ? phase.focus : null;
+  const celebrate = !!(configured && phase.journeyComplete);
 
-  // Opening / early chit-chat: converse, don't hand out a task.
-  if (isGreeting) {
-    let hello;
-    if (daysAway != null && daysAway >= 3) hello = "Welcome back — good to see you. How's the course feeling lately?";
-    else if (progressDelta != null && progressDelta > 0) hello = "Nice to see you again — you've been moving. How's it going?";
-    else hello = "Hey — glad you're here. How are you feeling about things this week?";
-    return { source: "rule-based", say: hello, intent: "chat", nextAction: null, plan: null, special: null, celebrate: progress.percentComplete === 100 };
+  if (progressUnavailable) {
+    return { source: "rule-based", say: "I can't read your progress right now — but I'm here. What's on your mind?", intent: "chat", nextAction: null, plan: null, special: null, celebrate: false };
   }
-  if (!nudgeAllowed && !wantsStatus) {
-    return { source: "rule-based", say: "I hear you. Tell me a bit more — how much time or energy do you have?", intent: "chat", nextAction: null, plan: null, special: null, celebrate: false };
+  if (celebrate) {
+    return { source: "rule-based", say: "You finished the journey. Quietly huge.", intent: "chat", nextAction: null, plan: null, special: null, celebrate: true };
   }
-  const minutesMatch = last.match(/(\d{1,3})\s*(min|minute|m)\b/);
-  const minutes = minutesMatch ? parseInt(minutesMatch[1], 10) : 30;
-
-  const sorted = [...remaining].sort((a, b) => {
-    if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
-    const da = a.dueAt ? Date.parse(a.dueAt) : Infinity;
-    const db = b.dueAt ? Date.parse(b.dueAt) : Infinity;
-    return da - db;
-  });
-
-  // Low energy → smallest item first.
-  if (energy === "low") sorted.sort((a, b) => a.estMinutes - b.estMinutes);
-
-  const hero = sorted[0] || null;
-  const budget = energy === "low" ? Math.min(minutes, 10) : minutes;
-  const plan = [];
-  let used = 0;
-  for (const it of sorted) {
-    if (used + it.estMinutes > budget) continue;
-    plan.push({ title: it.title, url: it.url, minutes: it.estMinutes, why: it.overdue ? "Overdue — clear this first" : "Due soon" });
-    used += it.estMinutes;
-    if (plan.length >= 4) break;
+  if (wantsStatus) {
+    const bits = [];
+    if (configured) bits.push(`${phase.phasesDone} of ${phase.totalPhases} phases done${phase.currentPhaseName ? ` — ${phase.currentPhaseName} is next` : ""}`);
+    if (health && typeof health.overallHealth === "number") bits.push(`health ${health.overallHealth}/100`);
+    return { source: "rule-based", say: (bits.join("; ") || "Here's where you stand") + ".", intent: "status", nextAction: null, plan: null, special: null, celebrate: false };
+  }
+  if (!nudgeAllowed) {
+    return { source: "rule-based", say: "I hear you. Tell me a bit more — how are you feeling about things?", intent: "chat", nextAction: null, plan: null, special: null, celebrate: false };
   }
 
-  const done = progress.percentComplete === 100;
-
-  // Prefer the week journey: reading of the focus week first, then its quiz.
+  // Next item from the active phase — prefer a reading (isPage) first, then the graded item.
   let nextAction = null;
-  if (focus) {
-    if (!focus.quizzesPassed && focus.reading && focus.reading[0]) {
-      const rd = focus.reading[0];
-      nextAction = { title: rd.title, url: rd.url, minutes: estimateMinutes(rd), why: `Read Week ${focus.week} material, then take the quiz` };
-    } else if (focus.quiz) {
-      nextAction = { title: focus.quiz.title, url: focus.quiz.url, minutes: 20, why: `Take the Week ${focus.week} quiz to pass it` };
-    }
+  if (focus && focus.items && focus.items.length) {
+    const pick = focus.items.find((it) => it.isPage) || focus.items[0];
+    nextAction = { title: pick.title, url: pick.url, why: pick.isPage ? `Read this, then the graded item in ${focus.name}` : `Next in ${focus.name}` };
   }
-  if (!nextAction && hero) {
-    nextAction = { title: hero.title, url: hero.url, minutes: hero.estMinutes, why: hero.overdue ? "Overdue — clear this first" : "Due soon" };
-  }
-
-  let say;
-  if (done) {
-    say = "You finished. Quietly huge.";
-  } else if (wantsStatus) {
-    say = journey && journey.totalWeeks
-      ? `${journey.weeksPassed} of ${journey.totalWeeks} weeks passed${focus ? ` — Week ${focus.week} is next` : ""}.`
-      : `${progress.percentComplete}% done.`;
-  } else if (focus && !focus.quizzesPassed && focus.reading && focus.reading[0]) {
-    say = `Week ${focus.week} next — read, then take the quiz:`;
-  } else if (energy === "low") {
-    say = "One small thing to keep momentum:";
-  } else {
-    say = "Here's where to start:";
-  }
-
   return {
     source: "rule-based",
-    say,
-    intent: wantsStatus ? "status" : "plan",
+    say: nextAction ? "Here's where to start:" : "Nothing outstanding I can see — nice.",
+    intent: nextAction ? "plan" : "chat",
     nextAction,
-    plan: plan.length ? plan : null,
+    plan: null,
     special: special[0] ? { kind: special[0].kind, title: special[0].title, url: special[0].url, note: special[0].kind === "resume" ? "Your resume assignment is in " + special[0].module : "Book your call in " + special[0].module } : null,
-    celebrate: done,
+    celebrate: false,
   };
 }
 
