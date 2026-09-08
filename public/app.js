@@ -9,13 +9,9 @@
   let energy = null;     // "low" | "ok" | "high" | null
   let busy = false;
 
-  const hour = new Date().getHours();
-  const greet = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-
   root.innerHTML = `
     <div class="hero">
       <div class="orb" id="orb"></div>
-      <h1>${greet}, ${esc(firstName(boot.name))}.</h1>
     </div>
     <div class="chips" id="chips"></div>
     <div class="stream" id="stream"></div>
@@ -29,7 +25,6 @@
   const input = document.getElementById("q");
   const orb = document.getElementById("orb");
 
-  function firstName(n) { return String(n || "there").split(/[\s(]/)[0] || "there"; }
 
   const chips = [
     { label: "How am I doing?", q: "How am I doing?" },
