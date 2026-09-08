@@ -144,10 +144,15 @@
 
   // ---- renderers ----
   function addNextAction(a) {
+    // Show scored/required so the tile says exactly what's needed to clear it.
+    let scoreBit = "";
+    if (a.score != null && a.outOf) scoreBit = `scored ${a.score}/${a.outOf}${a.needPct ? " · need " + a.needPct + "%" : ""}`;
+    else if (a.needPct) scoreBit = `need ${a.needPct}% to pass`;
+    const metaBits = [a.week ? "Week " + a.week : "", scoreBit].filter(Boolean).join(" · ");
     const el = card(`
       <div class="k">Your next step</div>
       <div class="next-title">${esc(a.title)}</div>
-      <div class="next-meta">${a.minutes ? "~" + a.minutes + " min" : ""}${a.minutes && a.why ? " · " : ""}${a.why ? esc(a.why) : ""}</div>
+      <div class="next-meta">${esc(metaBits)}</div>
       ${a.url ? `<a class="start" href="${a.url}" target="_blank" rel="noopener">Start now →</a>` : ""}
     `);
     el.classList.add("hero-card");

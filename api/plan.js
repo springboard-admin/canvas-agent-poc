@@ -142,6 +142,11 @@ EXPLAIN PASSING BY THE GATE (status.gate.type — this varies by course, get it 
 Use the gate's real numbers, never invent them. This is how the student knows what "done"
 actually means.
 
+PASSING CUTOFF: status.passPercent is the score an item must reach to count as passed. When
+asked "what's the passing score", give it: "you need {passPercent}% to pass." status.next.score
+/ .outOf are the current item's score and total. Never say you don't have the cutoff — it's
+in status.passPercent.
+
 COACHING BY STATE (meet them where they are):
 - caught_up: warm, brief reinforcement. Don't manufacture work.
 - on_track: light touch. Protect the momentum; don't over-coach a student who's fine.
@@ -186,12 +191,13 @@ async function runCoach({ messages, energy, mode, daysAway, status, progressUnav
           label: status.label,
           view: status.view, // "focus" (behind — hide score) | "detailed" (show score)
           gate: status.gate, // how the phase is passed: {type, passedCount, totalCount, required, passThreshold, remaining, gateMet}
+          passPercent: status.passPercent, // the score % an item must reach to pass (the cutoff)
           dueCount: status.dueCount,
           doneCount: status.doneCount,
           outstanding: status.outstanding,
           score: status.score, // null in focus view; a number in detailed view
           scoreBand: status.scoreBand, // "good" | "warn" | null
-          next: status.next ? { title: status.next.title, week: status.next.week } : null,
+          next: status.next ? { title: status.next.title, week: status.next.week, score: status.next.score, outOf: status.next.outOf } : null,
         },
     // Per-week facts so the model can answer specific questions ("did I do week 2?")
     // WITHOUT dumping the whole card. It reasons over these; it never recites them.
@@ -263,7 +269,7 @@ async function runCoach({ messages, energy, mode, daysAway, status, progressUnav
   if (show === "next" && !(nudgeAllowed && status.next)) show = "none";
   out.show = show;
   out.nextAction = show === "next"
-    ? { title: status.next.title, url: status.next.url, why: `Week ${status.next.week} — your next unfinished item` }
+    ? { title: status.next.title, url: status.next.url, week: status.next.week, score: status.next.score, outOf: status.next.outOf, needPct: status.passPercent, why: `Week ${status.next.week} — your next unfinished item` }
     : null;
   return { source: "claude", ...out };
 }
@@ -447,6 +453,10 @@ function fallbackCoach({ messages, status, progressUnavailable, special }) {
     ...reply("Here's where to start:", "plan", "next", {
       title: status.next.title,
       url: status.next.url,
+      week: status.next.week,
+      score: status.next.score,
+      outOf: status.next.outOf,
+      needPct: status.passPercent,
       why: `Week ${status.next.week} — your next unfinished item`,
     }),
     special: special[0]
