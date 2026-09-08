@@ -156,26 +156,50 @@
     stream.appendChild(el);
   }
 
-  // Mirrors My Progress: a named state, then the real rows — clickable, with what's
-  // left in each. No score: the student is never shown one there either.
+  // Mirrors My Progress exactly. Focus view (behind): no score, just the next step.
+  // Detailed view (on track): score + the full week list. Rows are whole-row clickable.
   function addStatus(s) {
+    // A whole-row link: clicking anywhere opens the row's target in a new tab.
+    const row = (week, detailHtml, url, done) => {
+      const inner = `
+        <div class="time">${done ? "✓" : ""}</div>
+        <div>
+          <span>Week ${week}</span>
+          <div class="why">${detailHtml}</div>
+        </div>`;
+      return url
+        ? `<a class="plan-item rowlink" href="${url}" target="_blank" rel="noopener">${inner}</a>`
+        : `<div class="plan-item">${inner}</div>`;
+    };
+
+    if (s.view === "focus") {
+      const n = s.next;
+      const body = n
+        ? row(n.week, esc(n.title), n.url, false)
+        : `<div class="why">You're all caught up for this week.</div>`;
+      stream.appendChild(card(`
+        <div class="k">Where you stand</div>
+        <div class="status-line">${esc(s.label)}</div>
+        <div class="meta"><span>Start here — one step at a time</span></div>
+        ${body}
+      `));
+      return;
+    }
+
+    // Detailed view.
     const rows = (s.rows || []).map((r) => {
       const left = r.items.filter((i) => !i.complete);
-      const detail = r.done
-        ? "done"
-        : left.map((i) => (i.url ? `<a href="${i.url}" target="_blank" rel="noopener">${esc(i.name)}</a>` : esc(i.name))).join(", ");
-      return `
-        <div class="plan-item">
-          <div class="time">${r.done ? "✓" : ""}</div>
-          <div>
-            <span>Week ${r.week}</span>
-            <div class="why">${detail}</div>
-          </div>
-        </div>`;
+      const detail = r.done ? "done" : left.map((i) => esc(i.name)).join(", ");
+      const url = r.done ? null : (left.find((i) => i.url) || {}).url || null;
+      return row(r.week, detail, url, r.done);
     }).join("");
+    const scoreLine =
+      typeof s.score === "number"
+        ? `<span class="score ${s.scoreBand === "good" ? "good" : "warn"}">${s.score}%</span>`
+        : "";
     stream.appendChild(card(`
       <div class="k">Where you stand</div>
-      <div class="status-line">${esc(s.label)}</div>
+      <div class="status-line">${esc(s.label)} ${scoreLine}</div>
       <div class="meta"><span>${s.doneCount} of ${s.dueCount} weeks finished</span></div>
       ${rows}
     `));

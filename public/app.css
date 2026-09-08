@@ -124,6 +124,11 @@ body {
 .plan-item a { color: var(--text); text-decoration:none; font-weight:550; }
 .plan-item a:hover { text-decoration: underline; }
 .plan-item .why { color: var(--muted); font-size: 13.5px; margin-top: 2px; }
+a.rowlink { display:flex; gap:14px; text-decoration:none; color:inherit; }
+a.rowlink:hover { background: var(--hover, rgba(0,0,0,0.03)); border-radius:8px; }
+.score { font-weight:600; }
+.score.good { color: #1a7f37; }
+.score.warn { color: #b5820b; }
 
 /* celebrate */
 .celebrate-card { text-align: center; border-color: rgba(15,157,99,0.3); }

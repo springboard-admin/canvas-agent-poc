@@ -44,3 +44,12 @@ Memory (M2) will add storage — cost it here when it lands.
 Progress/health is read from the My Progress app and **never recomputed here**. If the agent
 ever disagrees with the student's screen, trust is gone. `lib/myprogress.js` is the only place
 that data enters; `deriveState()` is pure and the model never touches the numbers.
+
+The focus-vs-detailed decision (behind → focus view, which hides the score and shows only the
+next step) is re-derived in `deriveState()` from primitives the app already returns
+(`cumulativeScore` vs `focusThreshold`, grace window). We deliberately do **not** read My
+Progress's internal focus flag — loose coupling by design, so that app can evolve its own view
+logic independently. Known small divergence: we don't read `focusModeEnabled`, so a course that
+turns focus mode off would still get focus framing from the agent. Accepted; revisit only if it
+bites. Any change to the app's scoring/focus logic can make the two disagree — the My Progress
+repo carries a memory note to check this app for regressions before shipping such a change.

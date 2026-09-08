@@ -131,6 +131,25 @@ test("deriveState: above the bar and one outstanding = on_track", () => {
   assert.equal(s.state, "on_track");
 });
 
+test("deriveState: behind = focus view, score hidden, no rows", () => {
+  const s = deriveState(csFixture({ cumulativeScore: 68 })); // < focusThreshold 70
+  assert.equal(s.view, "focus");
+  assert.equal(s.score, null);       // focus view hides the score, like the screen
+  assert.equal(s.scoreBand, null);
+  assert.equal(s.rows.length, 0);    // focus view shows only "next", not the list
+  assert.ok(s.next);
+});
+
+test("deriveState: detailed view shows the score with the app's band", () => {
+  const warn = deriveState(csFixture({ cumulativeScore: 75, passPercent: 80 }));
+  assert.equal(warn.view, "detailed"); // 75 >= focusThreshold 70
+  assert.equal(warn.score, 75);
+  assert.equal(warn.scoreBand, "warn"); // 75 < passPercent 80
+  const good = deriveState(csFixture({ cumulativeScore: 85, passPercent: 80 }));
+  assert.equal(good.scoreBand, "good");
+  assert.ok(good.rows.length > 0);
+});
+
 test("deriveState: grace window suppresses any verdict", () => {
   const s = deriveState(csFixture({ currentWeekNumber: 2 }));
   assert.equal(s.state, "starting");
