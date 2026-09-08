@@ -128,19 +128,22 @@
     }
   }
 
+  // The model chooses the card via data.show. Default is none — the conversation is the
+  // product; a card is the exception. Never repeat the same card two turns running.
+  let lastCard = null;
   function render(data) {
     if (data.say) addAgent(data.say);
-
     if (data.celebrate) addCelebrate();
 
-    // Status card only when they asked about standing.
-    if (data.intent === "status" && data.status) addStatus(data.status);
+    const show = data.show || "none";
+    const sig = show + ":" + (data.status ? data.status.doneCount + "/" + data.status.dueCount : "") + ":" + (data.nextAction ? data.nextAction.title : "");
+    const dupe = sig === lastCard;
 
-    // The hero: one clear next action.
-    if (data.nextAction) addNextAction(data.nextAction);
+    if (!dupe && show === "overview" && data.status) addStatus(data.status);
+    else if (!dupe && show === "next" && data.nextAction) addNextAction(data.nextAction);
+    if (show !== "none") lastCard = sig;
 
     if (data.special) addSpecial(data.special);
-
     scrollEnd();
   }
 

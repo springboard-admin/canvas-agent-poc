@@ -82,11 +82,11 @@ test("triage fails safe to coach on error", async () => {
   assert.equal(await triage([{ role: "user", content: "whatever" }]), "coach");
 });
 
-test("distress hard-gates the next step", async () => {
-  stubFetch([toolUseResponse({ say: "That sounds heavy.", intent: "plan" })]);
+test("distress forces show:none and no next step", async () => {
+  stubFetch([toolUseResponse({ say: "That sounds heavy.", intent: "plan", show: "next" })]);
   const out = await runCoach({ ...coachArgs(), distress: true });
+  assert.equal(out.show, "none");
   assert.equal(out.nextAction, null);
-  assert.equal(out.intent, "chat");
 });
 
 test("honest snag after both attempts fail — never the filler", async () => {
@@ -99,19 +99,34 @@ test("honest snag after both attempts fail — never the filler", async () => {
 
 // ---- M1: single-source state ----
 
-test("the next step comes from data, never from the model", async () => {
-  // Model tries to invent an item; we must ignore it and use the authoritative one.
-  stubFetch([toolUseResponse({ say: "do this", intent: "plan", nextAction: { title: "HALLUCINATED", url: "bad" } })]);
+test("show:next uses the authoritative item, never the model's", async () => {
+  stubFetch([toolUseResponse({ say: "do this", intent: "plan", show: "next", nextAction: { title: "HALLUCINATED", url: "bad" } })]);
   const out = await runCoach({ ...coachArgs() });
+  assert.equal(out.show, "next");
   assert.equal(out.nextAction.title, "Quiz 2");
   assert.equal(out.nextAction.url, "u2");
 });
 
-test("progressUnavailable gates the next step", async () => {
-  stubFetch([toolUseResponse({ say: "Here's a task.", intent: "plan" })]);
-  const out = await runCoach({ ...coachArgs(), status: deriveState(null), progressUnavailable: true });
+test("default show is none — no card unless the model asks", async () => {
+  stubFetch([toolUseResponse({ say: "you took it, just under the bar", intent: "chat" })]);
+  const out = await runCoach({ ...coachArgs() });
+  assert.equal(out.show, "none");
   assert.equal(out.nextAction, null);
-  assert.equal(out.intent, "chat");
+});
+
+test("progressUnavailable forces show:none and no next step", async () => {
+  stubFetch([toolUseResponse({ say: "Here's a task.", intent: "plan", show: "next" })]);
+  const out = await runCoach({ ...coachArgs(), status: deriveState(null), progressUnavailable: true });
+  assert.equal(out.show, "none");
+  assert.equal(out.nextAction, null);
+});
+
+test("weekFacts carry per-item submitted/score for the model to reason over", () => {
+  const s = deriveState(csFixture());
+  const wk2 = s.facts.find((w) => w.week === 2);
+  assert.equal(wk2.items[0].submitted, undefined); // fixture omits it → undefined ok
+  assert.equal(wk2.done, false);
+  assert.equal(s.facts.length, 2); // future week excluded
 });
 
 test("deriveState: due rows only, next = first unfinished item", () => {

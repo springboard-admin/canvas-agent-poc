@@ -34,10 +34,16 @@ Memory (M2) will add storage — cost it here when it lands.
   Deliberately *not* optimized (conditional fetching = branching for little gain at POC
   traffic). Revisit only if invocation volume becomes a real cost — likeliest lever: a short
   per-session cache once M2 adds a store. Don't add caching machinery before then.
-- The coach model now returns only `say`/`intent`/`special` — the next step, item rows and
-  status card are built from authoritative data. Smaller output per turn (cheaper) and
-  nothing factual can be hallucinated. Keep it that way: don't move facts back into the
-  model's output.
+- The coach model returns `say`/`intent`/`special`/`show` — never the item data itself. The
+  next step, rows and status card are built from authoritative data; nothing factual can be
+  hallucinated. Keep it that way: don't move facts back into the model's output.
+- Cards are model-chosen via `show` (none|overview|next), default **none** — conversation is
+  the product, a card is the exception. The frontend also de-dupes the same card two turns
+  running. Don't reintroduce mechanical per-intent card rendering.
+- `weekFacts` (per-week done/submitted/score) are preloaded into grounding so the model can
+  answer "did I do week 2?" without dumping the list. Cost: **+~1–2k input tokens/turn** for
+  a ~16-week course. Accepted — far cheaper than a tool round-trip, and one source. Revisit
+  (move to tools) only when data sources multiply or the payload outgrows preload.
 
 ### Invariant worth protecting
 

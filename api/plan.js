@@ -118,6 +118,20 @@ PROGRESS — YOU DO NOT COMPUTE IT (this mirrors exactly what the student sees i
 - If "progressUnavailable" is true you CANNOT see their progress: say so plainly, invent
   nothing, keep talking warmly.
 
+ANSWER THE ACTUAL QUESTION — use "weekFacts" (per week: done, and each item's complete /
+submitted / score / outOf). This lets you answer specifics in "say" WITHOUT a card:
+- "did I do week 2?" → check weekFacts for week 2. If submitted but score < pass, say so
+  warmly: "You did take it — scored 35 — but it's under the bar to count as passed, so it's
+  still on your list. Worth a retake." If submitted and not yet graded (score null), say
+  "it's in, just not graded yet." Never re-vomit the whole list to answer one week.
+
+WHICH CARD TO SHOW ("show") — DEFAULT "none". A card is a heavy interruption; earn it:
+- "none": normal. Any follow-up, any specific question, any chit-chat. Just talk.
+- "overview": ONLY when they ask broadly how they're doing AND haven't just seen it. Never
+  two turns in a row.
+- "next": ONLY when they ask what to do / for a task. Shows one tile, not the list.
+When unsure, "none". The conversation is the product; the card is the exception.
+
 COACHING BY STATE (meet them where they are):
 - caught_up: warm, brief reinforcement. Don't manufacture work.
 - on_track: light touch. Protect the momentum; don't over-coach a student who's fine.
@@ -168,6 +182,9 @@ async function runCoach({ messages, energy, mode, daysAway, status, progressUnav
           scoreBand: status.scoreBand, // "good" | "warn" | null
           next: status.next ? { title: status.next.title, week: status.next.week } : null,
         },
+    // Per-week facts so the model can answer specific questions ("did I do week 2?")
+    // WITHOUT dumping the whole card. It reasons over these; it never recites them.
+    weekFacts: progressUnavailable ? null : status.facts,
     specialItems: special,
   };
 
@@ -220,6 +237,7 @@ async function runCoach({ messages, energy, mode, daysAway, status, progressUnav
       source: "error",
       say: "I hit a snag on my end just now — mind saying that again?",
       intent: "chat",
+      show: "none",
       nextAction: null,
       special: null,
       celebrate,
@@ -227,14 +245,15 @@ async function runCoach({ messages, energy, mode, daysAway, status, progressUnav
   }
 
   const out = normalize(parsed, celebrate);
-  // The next step is OURS, not the model's — taken straight from the authoritative data,
-  // so it can't be hallucinated or reworded. Gated: never before it's earned, never while
-  // distressed, never when we can't see progress.
-  const showStep = !distress && nudgeAllowed && !progressUnavailable && status.next;
-  out.nextAction = showStep
+  // The model chose which card (if any) to show. We gate it: no cards while distressed
+  // or blind. Card CONTENTS are always ours (authoritative), never the model's words.
+  let show = ["none", "overview", "next"].includes(parsed.show) ? parsed.show : "none";
+  if (distress || progressUnavailable) show = "none";
+  if (show === "next" && !(nudgeAllowed && status.next)) show = "none";
+  out.show = show;
+  out.nextAction = show === "next"
     ? { title: status.next.title, url: status.next.url, why: `Week ${status.next.week} — your next unfinished item` }
     : null;
-  if (!showStep && out.intent === "plan") out.intent = "chat";
   return { source: "claude", ...out };
 }
 
@@ -277,8 +296,13 @@ const COACH_TOOL = {
   input_schema: {
     type: "object",
     properties: {
-      say: { type: "string", description: "1-2 short warm sentences. No item names, no numbers, no URLs." },
+      say: { type: "string", description: "1-2 short warm sentences answering exactly what was asked. No item names, no numbers, no URLs — cards carry those." },
       intent: { type: "string", enum: ["chat", "status", "plan"] },
+      show: {
+        type: "string",
+        enum: ["none", "overview", "next"],
+        description: "Which card to render. none = just talk (DEFAULT for follow-ups and specific questions). overview = the full status card (only for a broad 'how am I doing'). next = the single next-step tile (when they ask what to do).",
+      },
       special: {
         type: "object",
         properties: {
@@ -346,6 +370,7 @@ function crisisHandoff() {
     source: "crisis",
     say: "I'm really glad you told me. This sounds like a lot to carry, and you don't have to handle it on your own — a real person can help.",
     intent: "chat",
+    show: "none",
     nextAction: null,
     plan: null,
     special: {
@@ -393,19 +418,19 @@ function normalize(p, celebrate = false) {
 // Deterministic coach when no API key — keeps the POC alive, on the same single-source
 // data (phase + health), honest-blind when progress can't be read.
 function fallbackCoach({ messages, status, progressUnavailable, special }) {
-  const reply = (say, intent = "chat", nextAction = null, celebrate = false) => ({
-    source: "rule-based", say, intent, nextAction, special: null, celebrate,
+  const reply = (say, intent = "chat", show = "none", nextAction = null, celebrate = false) => ({
+    source: "rule-based", say, intent, show, nextAction, special: null, celebrate,
   });
   if (progressUnavailable) return reply("I can't read your progress right now — but I'm here. What's on your mind?");
 
   const last = (messages[messages.length - 1]?.content || "").toLowerCase();
   const wantsStatus = /how.*doing|progress|behind|on track/.test(last);
-  if (wantsStatus) return reply(status.label + ".", "status", null, status.state === "caught_up");
+  if (wantsStatus) return reply(status.label + ".", "status", "overview", null, status.state === "caught_up");
   if (!allowNudge(messages)) return reply("I hear you. Tell me a bit more — how are you feeling about things?");
-  if (!status.next) return reply("You're all caught up — nice.", "chat", null, true);
+  if (!status.next) return reply("You're all caught up — nice.", "chat", "none", null, true);
 
   return {
-    ...reply("Here's where to start:", "plan", {
+    ...reply("Here's where to start:", "plan", "next", {
       title: status.next.title,
       url: status.next.url,
       why: `Week ${status.next.week} — your next unfinished item`,
