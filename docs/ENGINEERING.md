@@ -51,6 +51,12 @@ Progress/health is read from the My Progress app and **never recomputed here**. 
 ever disagrees with the student's screen, trust is gone. `lib/myprogress.js` is the only place
 that data enters; `deriveState()` is pure and the model never touches the numbers.
 
+Passing is judged by the course's **gate** (`curriculum_state.gate`: all_complete | pass_count |
+cumulative), not a hardcoded rule — a student can be at 80% yet not passing if the gate is
+"every module". The agent explains passing by the gate type and mirrors the app's item-name
+shortening ("Graded Quiz"). Both are pass-through/derived; no new cost, no My Progress logic
+read.
+
 The focus-vs-detailed decision (behind → focus view, which hides the score and shows only the
 next step) is re-derived in `deriveState()` from primitives the app already returns
 (`cumulativeScore` vs `focusThreshold`, grace window). We deliberately do **not** read My

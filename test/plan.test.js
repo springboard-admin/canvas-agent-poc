@@ -187,6 +187,33 @@ test("deriveState: nothing outstanding = caught_up", () => {
   assert.equal(s.next, null);
 });
 
+test("deriveState: gate is authoritative for passing (all_complete)", () => {
+  const gate = { type: "all_complete", passedCount: 11, totalCount: 16, gateMet: false };
+  const s = deriveState(csFixture({ cumulativeScore: 90, gate })); // high score, but gate NOT met
+  assert.equal(s.gate.type, "all_complete");
+  assert.equal(s.gate.remaining, 5);      // 16 - 11
+  assert.notEqual(s.state, "caught_up");   // not passing despite 90%
+});
+
+test("deriveState: gateMet = caught_up even with score high", () => {
+  const gate = { type: "all_complete", passedCount: 16, totalCount: 16, gateMet: true };
+  const s = deriveState(csFixture({ gate }));
+  assert.equal(s.state, "caught_up");
+});
+
+test("deriveState: pass_count remaining", () => {
+  const gate = { type: "pass_count", required: 6, passedCount: 2, gateMet: false };
+  const s = deriveState(csFixture({ gate }));
+  assert.equal(s.gate.remaining, 4);
+});
+
+test("shortName collapses the long graded-quiz name", () => {
+  const cs = csFixture();
+  cs.weeks[1].items[0].name = "Graded Quiz: Pharmacology Drug Classes Part 2 Grade for Week 2: ...";
+  const s = deriveState(cs);
+  assert.equal(s.facts.find((w) => w.week === 2).items[0].name, "Graded Quiz");
+});
+
 test("deriveState: unreadable progress = unknown", () => {
   assert.equal(deriveState(null).state, "unknown");
   assert.equal(deriveState({ configured: false }).state, "unknown");

@@ -189,11 +189,19 @@
       return;
     }
 
-    // Detailed view.
+    // Detailed view — each item shows scored / required so the student sees exactly what's
+    // needed to pass. Whole row links to the first outstanding item.
+    const pass = s.passPercent || 80;
+    const itemLine = (i) => {
+      let tail;
+      if (i.complete) tail = `${i.score}/${i.outOf} ✓`;
+      else if (i.score != null) tail = `${i.score}/${i.outOf} · need ${pass}%`;
+      else tail = "not started";
+      return `${esc(i.name)} — ${tail}`;
+    };
     const rows = (s.rows || []).map((r) => {
-      const left = r.items.filter((i) => !i.complete);
-      const detail = r.done ? "done" : left.map((i) => esc(i.name)).join(", ");
-      const url = r.done ? null : (left.find((i) => i.url) || {}).url || null;
+      const detail = r.items.map(itemLine).join("<br>");
+      const url = (r.items.find((i) => !i.complete && i.url) || r.items.find((i) => i.url) || {}).url || null;
       return row(r.week, detail, url, r.done);
     }).join("");
     const scoreLine =
@@ -203,9 +211,18 @@
     stream.appendChild(card(`
       <div class="k">Where you stand</div>
       <div class="status-line">${esc(s.label)} ${scoreLine}</div>
-      <div class="meta"><span>${s.doneCount} of ${s.dueCount} weeks finished</span></div>
+      <div class="meta"><span>${gateLine(s)}</span></div>
       ${rows}
     `));
+  }
+
+  // Progress phrased by the pass gate — the real "what does done mean" for this course.
+  function gateLine(s) {
+    const g = s.gate;
+    if (g && g.type === "all_complete") return `${g.passedCount} of ${g.totalCount} modules passed`;
+    if (g && g.type === "pass_count") return `${g.passedCount} of ${g.required} needed passed`;
+    if (g && g.type === "cumulative") return `need ${g.passThreshold}% overall`;
+    return `${s.doneCount} of ${s.dueCount} weeks finished`;
   }
 
   function addSpecial(s) {

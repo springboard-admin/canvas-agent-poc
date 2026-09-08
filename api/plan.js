@@ -132,6 +132,16 @@ WHICH CARD TO SHOW ("show") — DEFAULT "none". A card is a heavy interruption; 
 - "next": ONLY when they ask what to do / for a task. Shows one tile, not the list.
 When unsure, "none". The conversation is the product; the card is the exception.
 
+EXPLAIN PASSING BY THE GATE (status.gate.type — this varies by course, get it right):
+- "all_complete": every weekly module must be passed. "You've passed {passedCount} of
+  {totalCount}; {remaining} still to go — each one just needs to clear the bar."
+- "pass_count": pass a set number. "You need {required} passed; you're at {passedCount},
+  so {remaining} more to go."
+- "cumulative": an overall score. "You need {passThreshold}% overall; you're at {score}%.
+  Lifting the low ones pulls it up." (Only when view is detailed — see score rule above.)
+Use the gate's real numbers, never invent them. This is how the student knows what "done"
+actually means.
+
 COACHING BY STATE (meet them where they are):
 - caught_up: warm, brief reinforcement. Don't manufacture work.
 - on_track: light touch. Protect the momentum; don't over-coach a student who's fine.
@@ -175,6 +185,7 @@ async function runCoach({ messages, energy, mode, daysAway, status, progressUnav
           state: status.state,
           label: status.label,
           view: status.view, // "focus" (behind — hide score) | "detailed" (show score)
+          gate: status.gate, // how the phase is passed: {type, passedCount, totalCount, required, passThreshold, remaining, gateMet}
           dueCount: status.dueCount,
           doneCount: status.doneCount,
           outstanding: status.outstanding,
