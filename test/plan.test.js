@@ -2,7 +2,7 @@
 // The Anthropic + edge-fn calls go through global fetch, which we stub per test.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runCoach, triage, crisisHandoff, normalize } from "../api/plan.js";
+import { runCoach, triage, advisingHandoff, normalize } from "../api/plan.js";
 import { getCurriculumState, deriveState } from "../lib/myprogress.js";
 
 process.env.ANTHROPIC_API_KEY = "test-key";
@@ -63,13 +63,22 @@ test("normalize never emits the old cheerful filler", () => {
   assert.equal(out.intent, "chat");
 });
 
-test("crisisHandoff returns a static support block, no task, no model call", () => {
-  globalThis.fetch = async () => { throw new Error("crisis must not call the model"); };
-  const out = crisisHandoff();
-  assert.equal(out.source, "crisis");
-  assert.equal(out.special.kind, "support");
-  assert.equal(out.nextAction, null);
-  assert.equal(out.intent, "chat");
+test("advisingHandoff deflects to advising: copyable email, no task, no model call", () => {
+  globalThis.fetch = async () => { throw new Error("deflection must not call the model"); };
+  for (const kind of ["at_risk", "crisis"]) {
+    const out = advisingHandoff(kind);
+    assert.equal(out.source, kind);
+    assert.equal(out.special.kind, "advising");
+    assert.ok(out.special.email.includes("@")); // an email to copy, not a mailto link
+    assert.equal(out.special.url, undefined);
+    assert.equal(out.nextAction, null);
+    assert.match(out.say, /advising/i);
+  }
+});
+
+test("triage routes drop/quit talk to at_risk", async () => {
+  stubFetch([toolUseResponse({ label: "at_risk" })]);
+  assert.equal(await triage([{ role: "user", content: "i want to quit the program" }]), "at_risk");
 });
 
 test("triage returns the model's label", async () => {

@@ -209,6 +209,26 @@
   }
 
   function addSpecial(s) {
+    // Advising deflection: show the inbox as copyable text (no mailto — unreliable across
+    // browsers/devices) with a one-click Copy button.
+    if (s.kind === "advising") {
+      const el = card(`
+        <div class="k">${esc(s.title || "Your advising team")}</div>
+        <div class="next-meta" style="margin-bottom:8px">${esc(s.note || "")}</div>
+        <div class="copyrow">
+          <span class="copyemail">${esc(s.email)}</span>
+          <button class="copybtn" type="button">Copy</button>
+        </div>
+      `);
+      const btn = el.querySelector(".copybtn");
+      btn.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(s.email); btn.textContent = "Copied"; }
+        catch { const r = document.createRange(); r.selectNodeContents(el.querySelector(".copyemail")); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); btn.textContent = "Select→copy"; }
+        setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+      });
+      stream.appendChild(el);
+      return;
+    }
     const support = s.kind === "support";
     const header = support ? "Support" : "Worth knowing";
     const label = support

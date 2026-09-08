@@ -56,8 +56,8 @@ export default async function handler(req, res) {
     if (process.env.ANTHROPIC_API_KEY) {
       // Triage real user turns (never the opening) for emotional routing.
       const label = mode === "greeting" ? "coach" : await triage(messages);
-      if (label === "crisis") {
-        agent = crisisHandoff();
+      if (label === "crisis" || label === "at_risk") {
+        agent = advisingHandoff(label);
       } else {
         agent = await runCoach({ messages, energy, mode, daysAway, status, progressUnavailable, special, ctx, distress: label === "distress" });
       }
@@ -323,18 +323,19 @@ const TRIAGE_TOOL = {
   input_schema: {
     type: "object",
     properties: {
-      label: { type: "string", enum: ["coach", "status", "distress", "crisis"] },
+      label: { type: "string", enum: ["coach", "status", "distress", "at_risk", "crisis"] },
     },
     required: ["label"],
   },
 };
 
 const TRIAGE_SYSTEM = `Classify the student's latest message into exactly one label:
-- crisis: self-harm, suicide, abuse, a medical or mental-health emergency, or acute distress needing a human now.
-- distress: struggling, overwhelmed, discouraged, "life is hard", burned out, low motivation — emotional but not an emergency.
+- crisis: self-harm, suicide, abuse, a medical or mental-health emergency — someone needs a human NOW.
+- at_risk: signals they might LEAVE the program — "quit", "drop out", "withdraw", "can't do this anymore", "want to give up", "thinking of leaving" — OR strong overwhelm about continuing ("it's too much", "can't keep up with work and study", "burning out"). This is NOT ours to solve; it hands off to advising.
+- distress: struggling, discouraged, "life is hard", low motivation — emotional, but they are NOT signalling they might leave.
 - status: asking how they're doing / their progress / where they stand.
 - coach: anything else — wants a task, a course question, or casual chat.
-When torn between distress and coach, choose distress. When torn between crisis and distress, choose crisis.`;
+Priority when torn: crisis > at_risk > distress > status > coach.`;
 
 // Cheap classifier on the latest user turn. Fail-safe: any error → "coach" (never block).
 async function triage(messages) {
@@ -351,33 +352,35 @@ async function triage(messages) {
       maxTokens: 50,
     });
     const label = out?.label;
-    return ["coach", "status", "distress", "crisis"].includes(label) ? label : "coach";
+    return ["coach", "status", "distress", "at_risk", "crisis"].includes(label) ? label : "coach";
   } catch (e) {
     console.error("triage failed:", e.message);
     return "coach";
   }
 }
 
-// Static, config-driven safe handoff for a crisis signal. No model call. Wording is a
-// safe default until Springboard provides legal-approved copy (M3).
-function crisisHandoff() {
-  const url = env("SUPPORT_CONTACT_URL", "");
-  const note = env(
-    "SUPPORT_CONTACT_NOTE",
-    "You can reach a real person who can help — you don't have to carry this alone.",
-  );
+// Deflect to advising. No model call, no problem-solving — the moment we see a student
+// might leave (or is in crisis), we hand off. One channel: advising@ (per product).
+// NOTE: the "flagged your advising team" claim is not yet backed by a real notification —
+// backlog: Segment event -> HubSpot workflow creating a task for the contact owner with the
+// conversation as payload. Until then the advising inbox is the actual path.
+function advisingHandoff(kind) {
+  const email = env("ADVISING_EMAIL", "advising@springboard.com");
+  const say =
+    kind === "crisis"
+      ? "I'm really glad you told me — this matters, and you shouldn't carry it alone. I've flagged your advising team and they'll reach out to support you as soon as they can."
+      : "That's a lot to be carrying, and this isn't something to sort out on your own. I've flagged your advising team — they'll reach out to support you as soon as they can.";
   return {
-    source: "crisis",
-    say: "I'm really glad you told me. This sounds like a lot to carry, and you don't have to handle it on your own — a real person can help.",
+    source: kind, // "at_risk" | "crisis"
+    say,
     intent: "chat",
     show: "none",
     nextAction: null,
-    plan: null,
     special: {
-      kind: "support",
-      title: url ? "Talk to someone now" : "Reach your Student Advisor",
-      url,
-      note,
+      kind: "advising",
+      title: "Your advising team",
+      email, // copyable — rendered as copy-to-clipboard, not a mailto link
+      note: "They'll reach out — you can also email them directly:",
     },
     celebrate: false,
   };
@@ -442,4 +445,4 @@ function fallbackCoach({ messages, status, progressUnavailable, special }) {
 }
 
 // Exported for unit tests (see test/plan.test.js). The default export is the handler.
-export { runCoach, triage, crisisHandoff, normalize };
+export { runCoach, triage, advisingHandoff, normalize };
