@@ -21,8 +21,8 @@ Per **one** `POST /api/plan` turn (i.e. each student message; the opening greeti
 | Cost | When | Notes / frugality |
 |---|---|---|
 | **Anthropic — triage** (Haiku) | every non-greeting turn | ~1 cheap call, tiny in/out (`ANTHROPIC_TRIAGE_MODEL`, default `claude-haiku-4-5`). |
-| **Anthropic — coach** (`ANTHROPIC_MODEL`, Sonnet 5) | every turn that isn't crisis | 1 call. Crisis turns make **zero** model calls (static handoff). Retry adds ≤1 more only on a malformed reply. |
-| **My Progress edge fn ×1** | **every** `/api/plan` turn | `phase-config?action=curriculum_state` on the lovable Supabase project. 1 invocation + server-side Canvas reads (course structure cached 1h there). Was 2 calls in M1-iter1; `canvas-dashboard` and `student_progress` were dropped in iter2. |
+| **Anthropic — agent loop** (`ANTHROPIC_MODEL`, Sonnet 5) | every turn that isn't at_risk/crisis | **2–4 calls/turn** — a tool-use loop (capped at 6 iterations). System prompt + tools are prompt-cached, so each round-trip re-reads the stable prefix at ~10% cost. at_risk/crisis turns make **zero** model calls (static advising handoff). |
+| **Connector edge fns** | only when a tool needs them | Each connector fetches its source **lazily** and memoizes per turn — a turn pays only for sources whose tools the model actually calls. Today one connector (`curriculum` → `phase-config?action=curriculum_state`); the mentor-call / live-session connectors will add their own edge fns when they ship. |
 | Vercel function invocation | every turn | the `/api/plan` handler itself. |
 
 **No database, no cron, no background jobs, no persistence** in the poc today (stateless).
@@ -44,6 +44,15 @@ Memory (M2) will add storage — cost it here when it lands.
   answer "did I do week 2?" without dumping the list. Cost: **+~1–2k input tokens/turn** for
   a ~16-week course. Accepted — far cheaper than a tool round-trip, and one source. Revisit
   (move to tools) only when data sources multiply or the payload outgrows preload.
+
+### Connector pattern (extensibility)
+
+The agent is a **tool-use loop** over a **connector registry** (`lib/connectors/`). Each
+connector = one external app (fetch + tools). The loop is source-agnostic: adding the
+mentor-call or live-session app later = drop in `lib/connectors/<name>.js` and list it in
+`index.js` — no loop change. Card **contents** are always built by us from a connector's
+authoritative data (the model names a week/item; it never supplies card text). Each new source
+app needs its own loose-coupling regression note (as `student-greeting-hub` has).
 
 ### Invariant worth protecting
 

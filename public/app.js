@@ -123,23 +123,34 @@
     }
   }
 
-  // The model chooses the card via data.show. Default is none — the conversation is the
-  // product; a card is the exception. Never repeat the same card two turns running.
+  // The agent returns an ordered list of cards it chose to render (often none — the
+  // conversation is the product, a card is the exception). Skip a card identical to the
+  // one shown on the previous turn.
   let lastCard = null;
   function render(data) {
     if (data.say) addAgent(data.say);
     if (data.celebrate) addCelebrate();
 
-    const show = data.show || "none";
-    const sig = show + ":" + (data.status ? data.status.doneCount + "/" + data.status.dueCount : "") + ":" + (data.nextAction ? data.nextAction.title : "");
-    const dupe = sig === lastCard;
-
-    if (!dupe && show === "overview" && data.status) addStatus(data.status);
-    else if (!dupe && show === "next" && data.nextAction) addNextAction(data.nextAction);
-    if (show !== "none") lastCard = sig;
-
-    if (data.special) addSpecial(data.special);
+    for (const c of data.cards || []) {
+      const sig = c.kind + ":" + (c.kind === "progress" ? c.doneCount + "/" + c.dueCount : c.kind === "next_step" ? c.week : c.kind === "open" ? c.url : "");
+      if (sig === lastCard) continue;
+      if (c.kind === "progress") addStatus(c);
+      else if (c.kind === "next_step") addNextAction(c);
+      else if (c.kind === "open") addOpen(c);
+      else if (c.kind === "advising") addSpecial(c);
+      lastCard = sig;
+    }
     scrollEnd();
+  }
+
+  function addOpen(c) {
+    const el = card(`
+      <div class="k">Open in Canvas</div>
+      <div class="next-title">${esc(c.title)}</div>
+      ${c.url ? `<a class="start" href="${c.url}" target="_blank" rel="noopener">Open in Canvas →</a>` : ""}
+    `);
+    el.classList.add("hero-card");
+    stream.appendChild(el);
   }
 
   // ---- renderers ----

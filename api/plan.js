@@ -1,12 +1,12 @@
-// Agent endpoint (Phase 1).
-// Frontend POSTs { messages: [...transcript], energy } — memory is client-side.
-// We inject real Canvas module data + a server-computed progress read, then let
-// Haiku act as a calm, state-aware study coach that returns a small JSON shape:
-//   { say, intent, nextAction, plan, special, celebrate }
-// Progress numbers are authoritative from the server, never invented by the model.
+// Agent endpoint. Frontend POSTs { messages: [...transcript] } — memory is client-side.
+// Flow: Haiku triage (safety gate) → at_risk/crisis deflect to advising (no model loop);
+// otherwise a Sonnet tool-use loop over the connector registry (lib/connectors/). The model
+// reads facts + renders cards via tools; card CONTENTS are built by us from authoritative
+// data, never the model's words. Response: { say, cards:[...], source }.
 import { env, readState, parseCookies } from "../lib/lti.js";
-import { getModules, findSpecialItems } from "../lib/canvas.js";
 import { getCurriculumState, deriveState } from "../lib/myprogress.js";
+import { toolDefs, runTool, makeToolCtx } from "../lib/connectors/index.js";
+import { progressCard, nextCard } from "../lib/connectors/curriculum.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -38,240 +38,171 @@ export default async function handler(req, res) {
       return;
     }
     const studentId = ctx?.userId;
-
-    const modules = await getModules(courseId, studentId);
-    const special = findSpecialItems(modules);
-
-    // Single source of truth = the My Progress app (exactly what the student sees).
-    // One read; state is derived deterministically, never by the model. On failure we
-    // degrade honest-blind rather than invent a number.
-    const cs = await getCurriculumState(courseId, studentId).catch(() => null);
-    const status = deriveState(cs);
-    const progressUnavailable = status.state === "unknown";
-
-    const daysAway =
-      typeof signals.daysAway === "number" ? signals.daysAway : null;
+    const daysAway = typeof signals.daysAway === "number" ? signals.daysAway : null;
 
     let agent;
     if (process.env.ANTHROPIC_API_KEY) {
-      // Triage real user turns (never the opening) for emotional routing.
+      // Triage real user turns (never the opening) for emotional routing. This is a
+      // safety gate BEFORE the agent loop — at_risk/crisis never reach the tools.
       const label = mode === "greeting" ? "coach" : await triage(messages);
       if (label === "crisis" || label === "at_risk") {
         agent = advisingHandoff(label);
       } else {
-        agent = await runCoach({ messages, energy, mode, daysAway, status, progressUnavailable, special, ctx, distress: label === "distress" });
+        agent = await runAgent({ messages, mode, daysAway, courseId, studentId, ctx, distress: label === "distress" });
       }
     } else {
-      agent = fallbackCoach({ messages, status, progressUnavailable, special });
+      // No API key → deterministic demo path over the same single source.
+      const cs = await getCurriculumState(courseId, studentId).catch(() => null);
+      agent = fallbackCoach({ messages, status: deriveState(cs) });
     }
 
-    res.status(200).json({ status: progressUnavailable ? null : status, ...agent });
+    res.status(200).json(agent);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 }
 
-const SYSTEM = `You are a warm, calm study coach living on a student's course home page.
-Your entire job: make the next step feel small, obvious, and do-able — so a tired,
-busy, procrastinating learner keeps making finite progress every week and, almost
-without noticing, finishes the course.
+const SYSTEM = `You are a warm, calm study advisor living on a student's course home page.
+Your job: help a tired, busy, procrastinating learner keep making small, steady progress —
+and, almost without noticing, finish the course.
 
-STYLE — HIGH SIGNAL, FEW WORDS (this matters most):
-- "say" is at most 1-2 short sentences. Often one is better. Cut every word that
-  isn't pulling weight. Aim for ~20 words, never more than ~35.
-- Warm and human, but spare. No preamble ("Good question", "Honestly"), no hedging,
-  no lists inside say, no repeating what they asked. Lead with the point.
-- Frame progress, not deficit. If behind, say how CLOSE they are — briefly.
-- The card carries the detail, so "say" should NOT re-list items or numbers.
-- A nudge, if any, is 3-5 words ("Start it now?").
+STYLE — HIGH SIGNAL, FEW WORDS (matters most):
+- Reply in 1-2 short warm sentences. Often one is better. Cut every word not pulling weight.
+- No preamble ("Good question", "Honestly"), no hedging, no repeating the question.
+- Answer EXACTLY what was asked. Don't over-explain or dump everything.
+- Cards carry the detail — do NOT recite item names, numbers, or URLs in your text.
 
-DON'T PUSH A TASK TOO EARLY (important):
-- Do NOT hand out a task on the opening or in the first exchange unless the student
-  explicitly asks for something to do or gives a time budget ("I have 15 min").
-- Open by connecting: a warm, personal hook + a light question that gets them talking
-  and lets you read their mood/energy from their reply. Gauge energy INDIRECTLY from
-  what they say — never ask "how's your energy" outright.
-- Let a suggestion emerge naturally after a couple of turns, once it feels earned.
-  When you do suggest, keep it to ONE small thing.
-- If nudgeAllowed is false in the data, keep nextAction and plan null and just converse.
+YOU HAVE TOOLS — this is how you know things and how you show cards. You have no built-in
+knowledge of this student; get every fact from a tool.
+READ tools (call these to learn facts, then answer in your own warm words):
+- get_progress — overall state, gate, passing cutoff, counts, score. For "how am I doing".
+- get_week(week) — the items in a week and how they did (score, out of, submitted, passed).
+  For "did I do week 2?", "what's left in week 3?".
+- find_item(query) — search their items by name/keyword.
+SHOW tools (render a card the student sees — the card content is built from authoritative
+data; you only choose to show it):
+- show_progress — the full progress card. ONLY for a broad "how am I doing".
+- show_next_step — the single next-step tile. ONLY when they ask what to do / for a task.
+- open_in_canvas(week) — a clickable card that opens that week's Canvas module page in a new
+  tab. Use for "take me to week N", "where do I study for this", "open the module".
 
-CONVERSATION:
-- If they ask a question (e.g. "why did you pick that?", "how am I doing?"),
-  ANSWER it naturally in "say". Do NOT force a plan when they just want to talk.
-- Only set intent "plan" when they want something to do / gave a time budget.
-- Set intent "status" when they ask how they're doing.
-- Otherwise intent "chat".
+NEVER invent, estimate, or recompute a fact. If a tool doesn't give it, say you don't have
+it — don't guess. Everything you state must trace to a tool result.
 
-PROGRESS — YOU DO NOT COMPUTE IT (this mirrors exactly what the student sees in
-"My Progress"; never contradict their screen):
-- "status" is authoritative and already computed: state, label, view, dueCount,
-  doneCount, outstanding, score, scoreBand, and "next" (the one concrete next item).
-- NEVER invent, estimate, or recompute a number, percentage, week or item name.
-- SCORE VISIBILITY FOLLOWS THE VIEW, exactly like the app:
-  * view "detailed": you MAY reference "score" (e.g. "you're at 82%"). scoreBand "good"
-    = reinforce; "warn" = gentle, still encouraging.
-  * view "focus": "score" is null and HIDDEN on the student's own screen too. Do NOT
-    state or hint at a percentage. Lead with "you're a bit behind but can still catch up",
-    then the single next step.
-- The next step and item list are rendered as cards — do NOT recite items or URLs in
-  "say". Refer to the step, don't list it.
-- If "progressUnavailable" is true you CANNOT see their progress: say so plainly, invent
-  nothing, keep talking warmly.
+CARDS ARE THE EXCEPTION, NOT THE RULE. Default: just talk, no card. A card is a heavy
+interruption — earn it. Specific questions and follow-ups get a spoken answer, no card.
+Never show the same card two turns running.
 
-ANSWER THE ACTUAL QUESTION — use "weekFacts" (per week: done, and each item's complete /
-submitted / score / outOf). This lets you answer specifics in "say" WITHOUT a card:
-- "did I do week 2?" → check weekFacts for week 2. If submitted but score < pass, say so
-  warmly: "You did take it — scored 35 — but it's under the bar to count as passed, so it's
-  still on your list. Worth a retake." If submitted and not yet graded (score null), say
-  "it's in, just not graded yet." Never re-vomit the whole list to answer one week.
+EXPLAIN PASSING BY THE GATE (get_progress.gate.type — varies by course, get it right):
+- "all_complete": every module must be passed — "you've passed {passedCount} of {totalCount};
+  {remaining} to go, each just needs to clear the bar."
+- "pass_count": "you need {required} passed; you're at {passedCount}, {remaining} more."
+- "cumulative": "you need {passThreshold}% overall; you're at {score}%."
+Use the gate's real numbers. This is how the student knows what "done" means.
+PASSING CUTOFF: get_progress.passPercent is the score an item must reach to pass. Asked "what's
+the passing score" → give it. Never say you don't have the cutoff.
 
-WHICH CARD TO SHOW ("show") — DEFAULT "none". A card is a heavy interruption; earn it:
-- "none": normal. Any follow-up, any specific question, any chit-chat. Just talk.
-- "overview": ONLY when they ask broadly how they're doing AND haven't just seen it. Never
-  two turns in a row.
-- "next": ONLY when they ask what to do / for a task. Shows one tile, not the list.
-When unsure, "none". The conversation is the product; the card is the exception.
+SCORE VISIBILITY FOLLOWS THE VIEW (from get_progress.view), exactly like the app:
+- "detailed": you MAY state the score. scoreBand "good" = reinforce, "warn" = gentle.
+- "focus" (behind): score is HIDDEN on the student's own screen — do NOT state a percentage.
+  Lead with "you're a bit behind but can still catch up", then the one next step.
 
-EXPLAIN PASSING BY THE GATE (status.gate.type — this varies by course, get it right):
-- "all_complete": every weekly module must be passed. "You've passed {passedCount} of
-  {totalCount}; {remaining} still to go — each one just needs to clear the bar."
-- "pass_count": pass a set number. "You need {required} passed; you're at {passedCount},
-  so {remaining} more to go."
-- "cumulative": an overall score. "You need {passThreshold}% overall; you're at {score}%.
-  Lifting the low ones pulls it up." (Only when view is detailed — see score rule above.)
-Use the gate's real numbers, never invent them. This is how the student knows what "done"
-actually means.
-
-PASSING CUTOFF: status.passPercent is the score an item must reach to count as passed. When
-asked "what's the passing score", give it: "you need {passPercent}% to pass." status.next.score
-/ .outOf are the current item's score and total. Never say you don't have the cutoff — it's
-in status.passPercent.
-
-COACHING BY STATE (meet them where they are):
+COACHING BY STATE (get_progress.state):
 - caught_up: warm, brief reinforcement. Don't manufacture work.
-- on_track: light touch. Protect the momentum; don't over-coach a student who's fine.
-- off_track (focus view): lead with warmth and "you can still finish on time", NO number,
-  then the one smallest next step. Never lecture or list what they've missed.
-- behind: shrink the ask. ONE small step, zero guilt, "start here" energy.
-- starting / nothing_due: encouraging, no pressure, no task.
+- on_track: light touch; protect momentum, don't over-coach.
+- off_track (focus): warmth + "you can still finish on time", NO number, one smallest step.
+- behind: shrink the ask — ONE small step, zero guilt.
+- starting / nothing_due / unavailable: encouraging, no task; if unavailable, say plainly you
+  can't read their progress right now.
 
-SPECIAL ITEMS: only mention resume/booking/coaching items if they exist in the
-provided list AND are relevant to what the student said or asked. Never invent them.
+DON'T PUSH A TASK TOO EARLY: on the opening or first exchange, don't hand out a task unless
+they ask for one or give a time budget. Open by connecting warmly; let a suggestion emerge.
 
-OPENING GREETING (when told this is the opening): the student just landed and hasn't
-said anything. Do NOT give them a task or a plan. Open with ONE short, warm,
-personalized line + a light, genuine question that invites them to reply — so they
-start a conversation and you can read how they're doing. Use the signals for warmth,
-not pressure:
-- daysAway large (>=3): "welcome back", zero guilt, glad they're here.
-- behind (low health / overdue): stay encouraging and low-pressure; make it feel okay to
-  be here.
-- on track (healthy): warm reinforcement.
-Set intent "chat", nextAction null, plan null. Keep it under ~25 words.
+HABITS (only when attendance/engagement tools are available — they may not be yet): when
+tools for mentor-call attendance or live-session engagement exist, factor them into "how am I
+doing" and gently build good habits — don't keep mentors waiting, cut no-shows, catch missed
+live-session recordings — alongside curriculum progress. If those tools aren't present, ignore
+this.
 
-You return only "say", "intent" and optionally "special". The next step, the item list
-and the status card are built by the app from authoritative data — not by you.`;
+OPENING GREETING (when told this is the opening): the student just landed. No task, no card.
+One short warm personalized line + a light question. daysAway >=3 → "welcome back", zero guilt.
+Under ~25 words.`;
 
-async function runCoach({ messages, energy, mode, daysAway, status, progressUnavailable, special, ctx, distress = false }) {
-  const model = env("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001");
-  const nudgeAllowed = mode !== "greeting" && !distress && allowNudge(messages);
-  const celebrate = status.state === "caught_up";
-  const grounding = {
-    student: ctx?.givenName || ctx?.name || "there",
-    energySignal: energy,
-    nudgeAllowed,
-    daysAway,
-    distressSignal: distress,
-    progressUnavailable: !!progressUnavailable,
-    // Authoritative, already computed. The model reads it; it never recomputes it.
-    status: progressUnavailable
-      ? null
-      : {
-          state: status.state,
-          label: status.label,
-          view: status.view, // "focus" (behind — hide score) | "detailed" (show score)
-          gate: status.gate, // how the phase is passed: {type, passedCount, totalCount, required, passThreshold, remaining, gateMet}
-          passPercent: status.passPercent, // the score % an item must reach to pass (the cutoff)
-          dueCount: status.dueCount,
-          doneCount: status.doneCount,
-          outstanding: status.outstanding,
-          score: status.score, // null in focus view; a number in detailed view
-          scoreBand: status.scoreBand, // "good" | "warn" | null
-          next: status.next ? { title: status.next.title, week: status.next.week, score: status.next.score, outOf: status.next.outOf } : null,
-        },
-    // Per-week facts so the model can answer specific questions ("did I do week 2?")
-    // WITHOUT dumping the whole card. It reasons over these; it never recites them.
-    weekFacts: progressUnavailable ? null : status.facts,
-    specialItems: special,
-  };
+// The agent: a tool-use loop. The model decides which tools to call across the connector
+// registry; we execute them, feed results back, and loop until it's done. Cards are
+// collected from the render tools (authoritative content, built by us). Cap iterations so
+// a misbehaving model can never hang; fall back honestly if the call fails outright.
+const MAX_ITERS = 6;
+async function runAgent({ messages, mode, daysAway, courseId, studentId, ctx, distress = false }) {
+  const model = env("ANTHROPIC_MODEL", "claude-sonnet-5");
+  const toolCtx = makeToolCtx({ courseId, studentId });
+  const cards = [];
+  const tools = toolDefs();
 
   const convo = (messages || [])
     .filter((m) => m && m.role && m.content)
     .slice(-12)
     .map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: String(m.content) }));
-
-  // Prepend the grounding as the first user turn so the model has live data.
-  const anthropicMessages = [
-    { role: "user", content: `LIVE COURSE DATA (authoritative, use these numbers):\n${JSON.stringify(grounding)}` },
-    ...convo,
-  ];
+  const anthropicMessages = [...convo];
   if (mode === "greeting") {
-    anthropicMessages.push({
-      role: "user",
-      content: "This is the OPENING — the student just landed and hasn't asked anything. Follow the OPENING GREETING rules: a warm personalized hook + a light question. No task, no plan.",
-    });
+    anthropicMessages.push({ role: "user", content: `[opening — the student ${ctx?.givenName ? ctx.givenName + " " : ""}just landed${daysAway != null ? `, ${daysAway} days since last visit` : ""}, hasn't asked anything. Follow the OPENING GREETING rules: one warm line + a light question. No task, no card.]` });
   }
   if (distress) {
-    anthropicMessages.push({
-      role: "user",
-      content: "The student sounds emotionally low or overwhelmed. Lead with warmth and genuine acknowledgement. Do NOT offer a task, plan, or next step this turn — just be human and invite them to say more. Set intent 'chat', nextAction and plan null.",
-    });
+    anthropicMessages.push({ role: "user", content: "[the student sounds low/overwhelmed — lead with warmth, DO NOT offer a task or show a next-step/open card this turn, just be human and invite them to say more.]" });
   }
 
-  // Structured output via a forced tool call — the model's reply is schema-valid JSON,
-  // not prose we have to fish out. Retry once on failure; never fail silently.
-  let parsed = null;
+  let say = "";
   try {
-    parsed = await callStructured({ model, system: SYSTEM, messages: anthropicMessages, tool: COACH_TOOL });
-  } catch (e) {
-    console.error("coach call failed:", e.message);
-  }
-  if (!parsed) {
-    try {
-      parsed = await callStructured({
-        model,
-        system: SYSTEM,
-        messages: [...anthropicMessages, { role: "user", content: "Reply again by calling the respond tool with valid fields." }],
-        tool: COACH_TOOL,
-      });
-    } catch (e) {
-      console.error("coach retry failed:", e.message);
+    for (let i = 0; i < MAX_ITERS; i++) {
+      const data = await callMessages({ model, system: SYSTEM, messages: anthropicMessages, tools });
+      const content = data.content || [];
+      const text = content.filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+      if (text) say = text;
+      const toolUses = content.filter((b) => b.type === "tool_use");
+      if (data.stop_reason !== "tool_use" || toolUses.length === 0) break;
+      anthropicMessages.push({ role: "assistant", content });
+      const results = [];
+      for (const tu of toolUses) {
+        const out = await runTool(tu.name, tu.input, toolCtx, cards);
+        results.push({ type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(out) });
+      }
+      anthropicMessages.push({ role: "user", content: results });
     }
-  }
-  if (!parsed) {
-    // Honest last resort — never the old cheerful filler masquerading as a real reply.
-    return {
-      source: "error",
-      say: "I hit a snag on my end just now — mind saying that again?",
-      intent: "chat",
-      show: "none",
-      nextAction: null,
-      special: null,
-      celebrate,
-    };
+  } catch (e) {
+    console.error("agent loop failed:", e.message);
+    return { source: "error", say: "I hit a snag on my end just now — mind saying that again?", cards: [] };
   }
 
-  const out = normalize(parsed, celebrate);
-  // The model chose which card (if any) to show. We gate it: no cards while distressed
-  // or blind. Card CONTENTS are always ours (authoritative), never the model's words.
-  let show = ["none", "overview", "next"].includes(parsed.show) ? parsed.show : "none";
-  if (distress || progressUnavailable) show = "none";
-  if (show === "next" && !(nudgeAllowed && status.next)) show = "none";
-  out.show = show;
-  out.nextAction = show === "next"
-    ? { title: status.next.title, url: status.next.url, week: status.next.week, score: status.next.score, outOf: status.next.outOf, needPct: status.passPercent, why: `Week ${status.next.week} — your next unfinished item` }
-    : null;
-  return { source: "claude", ...out };
+  // Preserve the guarantees: while distressed, drop any task/navigation cards (keep an
+  // overview if the model insisted). A card must never surface work into a hard moment.
+  let finalCards = cards;
+  if (distress) finalCards = finalCards.filter((c) => c.kind === "progress");
+
+  return { source: "claude", say: say || "I'm here — what's on your mind?", cards: finalCards };
+}
+
+async function callMessages({ model, system, messages, tools, maxTokens = 800 }) {
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      // Cache the stable system prompt across the loop's round-trips.
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+      messages,
+      tools,
+    }),
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`Anthropic ${r.status}: ${t.slice(0, 200)}`);
+  }
+  return r.json();
 }
 
 // ---- structured model calls ---------------------------------------------------
@@ -303,36 +234,6 @@ async function callStructured({ model, system, messages, tool, maxTokens = 600 }
   const block = (data.content || []).find((c) => c.type === "tool_use");
   return block ? block.input : null;
 }
-
-// Deliberately small: the model writes the human sentence and nothing else. The next
-// step, the item list and the status card come from authoritative data. Fewer output
-// tokens per turn, and nothing factual can be hallucinated.
-const COACH_TOOL = {
-  name: "respond",
-  description: "Reply to the student. Always call this tool with your message.",
-  input_schema: {
-    type: "object",
-    properties: {
-      say: { type: "string", description: "1-2 short warm sentences answering exactly what was asked. No item names, no numbers, no URLs — cards carry those." },
-      intent: { type: "string", enum: ["chat", "status", "plan"] },
-      show: {
-        type: "string",
-        enum: ["none", "overview", "next"],
-        description: "Which card to render. none = just talk (DEFAULT for follow-ups and specific questions). overview = the full status card (only for a broad 'how am I doing'). next = the single next-step tile (when they ask what to do).",
-      },
-      special: {
-        type: "object",
-        properties: {
-          kind: { type: "string" },
-          title: { type: "string" },
-          url: { type: "string" },
-          note: { type: "string" },
-        },
-      },
-    },
-    required: ["say", "intent"],
-  },
-};
 
 const TRIAGE_TOOL = {
   name: "classify",
@@ -390,16 +291,12 @@ function advisingHandoff(kind) {
   return {
     source: kind, // "at_risk" | "crisis"
     say,
-    intent: "chat",
-    show: "none",
-    nextAction: null,
-    special: {
+    cards: [{
       kind: "advising",
       title: "Your advising team",
       email, // copyable — rendered as copy-to-clipboard, not a mailto link
       note: "They'll reach out — you can also email them directly:",
-    },
-    celebrate: false,
+    }],
   };
 }
 
@@ -414,56 +311,17 @@ function allowNudge(messages) {
   return explicit || users.length >= 2;
 }
 
-function safeJson(text) {
-  try {
-    const s = text.indexOf("{");
-    const e = text.lastIndexOf("}");
-    if (s === -1 || e === -1) return {};
-    return JSON.parse(text.slice(s, e + 1));
-  } catch {
-    return {};
-  }
-}
-
-function normalize(p, celebrate = false) {
-  return {
-    say: p.say || "I'm here — tell me what's on your mind.",
-    intent: ["chat", "status", "plan"].includes(p.intent) ? p.intent : "chat",
-    nextAction: null, // set by the caller from authoritative data, never by the model
-    special: p.special || null,
-    celebrate: celebrate === true,
-  };
-}
-
-// Deterministic coach when no API key — keeps the POC alive, on the same single-source
-// data (phase + health), honest-blind when progress can't be read.
-function fallbackCoach({ messages, status, progressUnavailable, special }) {
-  const reply = (say, intent = "chat", show = "none", nextAction = null, celebrate = false) => ({
-    source: "rule-based", say, intent, show, nextAction, special: null, celebrate,
-  });
-  if (progressUnavailable) return reply("I can't read your progress right now — but I'm here. What's on your mind?");
-
+// Deterministic path when no API key — same single source, new {say, cards} shape.
+function fallbackCoach({ messages, status }) {
+  if (status.state === "unknown") return { source: "rule-based", say: "I can't read your progress right now — but I'm here. What's on your mind?", cards: [] };
   const last = (messages[messages.length - 1]?.content || "").toLowerCase();
   const wantsStatus = /how.*doing|progress|behind|on track/.test(last);
-  if (wantsStatus) return reply(status.label + ".", "status", "overview", null, status.state === "caught_up");
-  if (!allowNudge(messages)) return reply("I hear you. Tell me a bit more — how are you feeling about things?");
-  if (!status.next) return reply("You're all caught up — nice.", "chat", "none", null, true);
-
-  return {
-    ...reply("Here's where to start:", "plan", "next", {
-      title: status.next.title,
-      url: status.next.url,
-      week: status.next.week,
-      score: status.next.score,
-      outOf: status.next.outOf,
-      needPct: status.passPercent,
-      why: `Week ${status.next.week} — your next unfinished item`,
-    }),
-    special: special[0]
-      ? { kind: special[0].kind, title: special[0].title, url: special[0].url, note: special[0].kind === "resume" ? "Your resume assignment is in " + special[0].module : "Book your call in " + special[0].module }
-      : null,
-  };
+  if (wantsStatus) return { source: "rule-based", say: status.label + ".", cards: [progressCard(status)] };
+  if (!allowNudge(messages)) return { source: "rule-based", say: "I hear you. Tell me a bit more — how are you feeling about things?", cards: [] };
+  const c = nextCard(status);
+  if (!c) return { source: "rule-based", say: "You're all caught up — nice.", cards: [] };
+  return { source: "rule-based", say: "Here's where to start:", cards: [c] };
 }
 
 // Exported for unit tests (see test/plan.test.js). The default export is the handler.
-export { runCoach, triage, advisingHandoff, normalize };
+export { runAgent, triage, advisingHandoff, fallbackCoach };
