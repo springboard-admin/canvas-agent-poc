@@ -16,7 +16,7 @@ const SP = () => ({
   phases: [
     { name: "Curriculum", status: "active", gateMet: false, phaseClearMode: "cumulative", phaseClearThreshold: 70, cumulativeScore: 68, gateType: "all_complete", passedCount: 11, requiredCount: 16, totalCount: 16, items: [
       { title: "Week 1 | Pharm", passed: true, done: true, score: 80, isPage: false, subItems: [{ title: "Graded Quiz: Pharm Week 1", score: 80, points: 100, passed: true, done: true, url: "u1" }] },
-      { title: "Week 2 | Pharm", passed: false, done: true, score: 35, isPage: false, subItems: [{ title: "Graded Quiz: Pharm Week 2", score: 35, points: 100, passed: false, done: true, url: "u2" }] },
+      { title: "Week 2 | Pharm", passed: false, done: true, score: 35, isPage: false, subItems: [{ title: "Graded Quiz: Pharm Week 2", score: 35, points: 100, passed: false, done: true, url: "u2", passThreshold: 80 }] },
       { title: "Week 5 | Pharm Law", passed: false, done: false, isPage: false, subItems: [{ title: "Graded Quiz: Law", score: null, points: 100, passed: false, done: false, url: "u5" }] },
     ] },
     { name: "Final Exam", status: "upcoming", gateMet: false, passedCount: 0, requiredCount: 1, totalCount: 1, items: [] },
@@ -77,7 +77,7 @@ test("show_next_step renders the authoritative tile", async () => {
   assert.equal(tile.title, "Graded Quiz");
   assert.equal(tile.week, 2);
   assert.equal(tile.score, 35);
-  assert.equal(tile.needPct, 70);
+  assert.equal(tile.needPct, 80); // the item's OWN threshold, not the phase's cumulative 70
 });
 
 test("open_in_canvas uses the real module URL from a sub-item", async () => {

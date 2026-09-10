@@ -223,9 +223,10 @@
     // needed to pass. Whole row links to the first outstanding item.
     const pass = s.passPercent || 80;
     const itemLine = (i) => {
+      const need = i.need != null ? i.need : pass; // the item's own bar, not the phase bar
       let tail;
       if (i.complete) tail = `${i.score}/${i.outOf} ✓`;
-      else if (i.score != null) tail = `${i.score}/${i.outOf} · need ${pass}%`;
+      else if (i.score != null) tail = `${i.score}/${i.outOf} · need ${need}%`;
       else tail = "not started";
       return `${esc(i.name)} — ${tail}`;
     };
