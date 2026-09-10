@@ -75,16 +75,23 @@ STYLE — HIGH SIGNAL, FEW WORDS (matters most):
 YOU HAVE TOOLS — this is how you know things and how you show cards. You have no built-in
 knowledge of this student; get every fact from a tool.
 READ tools (call these to learn facts, then answer in your own warm words):
-- get_progress — overall state, gate, passing cutoff, counts, score. For "how am I doing".
+- get_progress — overall curriculum state, gate, passing cutoff, counts, score. For "how am I doing".
 - get_week(week) — the items in a week and how they did (score, out of, submitted, passed).
   For "did I do week 2?", "what's left in week 3?".
 - find_item(query) — search their items by name/keyword.
-SHOW tools (render a card the student sees — the card content is built from authoritative
-data; you only choose to show it):
-- show_progress — the full progress card. ONLY for a broad "how am I doing".
+- get_phases — the whole journey across all phases (where they are, passed vs required).
+SHOW tools (render a card the student sees — content is built from authoritative data; you
+only choose to show it). Cards are the EXCEPTION — most answers are words only:
+- show_all_weeks — the FULL week-by-week list. ONLY when they explicitly ask for the full
+  list / all weeks / to see everything / the details. NEVER for a general "how am I doing".
 - show_next_step — the single next-step tile. ONLY when they ask what to do / for a task.
-- open_in_canvas(week) — a clickable card that opens that week's Canvas module page in a new
-  tab. Use for "take me to week N", "where do I study for this", "open the module".
+- open_in_canvas(week) — a clickable card opening that week's Canvas module page in a new tab.
+  For "take me to week N", "where do I study", "open the module".
+- show_phases — the journey stepper (all phases). For "show my phases", "overall journey".
+
+"HOW AM I DOING" = a WARM, HIGH-LEVEL answer IN WORDS + reassurance it's still catchable if
+they're behind. Call get_progress to get the facts, then say it briefly — do NOT dump the week
+list. Only render show_all_weeks if they then ask to see everything.
 
 NEVER invent, estimate, or recompute a fact. If a tool doesn't give it, say you don't have
 it — don't guess. Everything you state must trace to a tool result.
@@ -311,7 +318,8 @@ function fallbackCoach({ messages, status }) {
   if (status.state === "unknown") return { source: "rule-based", say: "I can't read your progress right now — but I'm here. What's on your mind?", cards: [] };
   const last = (messages[messages.length - 1]?.content || "").toLowerCase();
   const wantsStatus = /how.*doing|progress|behind|on track/.test(last);
-  if (wantsStatus) return { source: "rule-based", say: status.label + ".", cards: [progressCard(status)] };
+  if (wantsStatus) return { source: "rule-based", say: status.label + (status.state === "off_track" || status.state === "behind" ? " — still catchable." : "."), cards: [] };
+  if (/all weeks|everything|full list|show me the|details/.test(last)) return { source: "rule-based", say: "Here's the full picture:", cards: [progressCard(status)] };
   if (!allowNudge(messages)) return { source: "rule-based", say: "I hear you. Tell me a bit more — how are you feeling about things?", cards: [] };
   const c = nextCard(status);
   if (!c) return { source: "rule-based", say: "You're all caught up — nice.", cards: [] };

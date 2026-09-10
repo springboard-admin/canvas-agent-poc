@@ -99,10 +99,35 @@ test("triage routes drop/quit talk to at_risk; advisingHandoff deflects, no loop
   assert.match(out.say, /@/);
 });
 
-test("fallbackCoach (no key) returns the cards shape", () => {
+test("fallbackCoach: 'how am I doing' is words only; full list only on explicit ask", () => {
   const status = deriveState(CS());
-  const out = fallbackCoach({ messages: [{ role: "user", content: "how am I doing" }], status });
-  assert.equal(out.cards[0].kind, "progress");
+  const light = fallbackCoach({ messages: [{ role: "user", content: "how am I doing" }], status });
+  assert.equal(light.cards.length, 0); // no week list for a general check-in
+  const full = fallbackCoach({ messages: [{ role: "user", content: "show me everything" }], status });
+  assert.equal(full.cards[0].kind, "progress");
+});
+
+test("show_all_weeks renders the full list; show_phases renders the journey stepper", async () => {
+  // show_all_weeks over curriculum_state
+  route({ model: [toolUse("show_all_weeks", {}), finalText("Here's the full picture.")] });
+  let out = await runAgent(agentArgs());
+  assert.ok(out.cards.find((c) => c.kind === "progress" && c.rows.length > 0));
+
+  // show_phases over student_progress (journey connector) — route the phases fetch too
+  const phases = { configured: true, currentPhaseIndex: 0, journeyComplete: false, phases: [
+    { name: "Curriculum", status: "active", passedCount: 11, requiredCount: 16, gateMet: false },
+    { name: "Final Exam", status: "upcoming", passedCount: 0, requiredCount: 1, gateMet: false },
+  ] };
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("api.anthropic.com")) return { ok: true, json: async () => (fetch._q.length > 1 ? fetch._q.shift() : fetch._q[0]), text: async () => "" };
+    if (String(url).includes("student_progress")) return { ok: true, status: 200, json: async () => phases, text: async () => "" };
+    return { ok: true, status: 200, json: async () => CS(), text: async () => "" };
+  };
+  fetch._q = [toolUse("show_phases", {}), finalText("Here's your journey.")];
+  out = await runAgent(agentArgs());
+  const stepper = out.cards.find((c) => c.kind === "phases");
+  assert.equal(stepper.phases.length, 2);
+  assert.equal(stepper.phases[0].name, "Curriculum");
 });
 
 // --- connector registry extensibility ---

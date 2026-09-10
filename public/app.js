@@ -132,11 +132,12 @@
     if (data.celebrate) addCelebrate();
 
     for (const c of data.cards || []) {
-      const sig = c.kind + ":" + (c.kind === "progress" ? c.doneCount + "/" + c.dueCount : c.kind === "next_step" ? c.week : c.kind === "open" ? c.url : "");
+      const sig = c.kind + ":" + (c.kind === "progress" ? c.doneCount + "/" + c.dueCount : c.kind === "next_step" ? c.week : c.kind === "open" ? c.url : c.kind === "phases" ? (c.currentPhaseName || "") : "");
       if (sig === lastCard) continue;
       if (c.kind === "progress") addStatus(c);
       else if (c.kind === "next_step") addNextAction(c);
       else if (c.kind === "open") addOpen(c);
+      else if (c.kind === "phases") addPhases(c);
       lastCard = sig;
     }
     scrollEnd();
@@ -150,6 +151,25 @@
     `);
     el.classList.add("hero-card");
     stream.appendChild(el);
+  }
+
+  // The whole journey as a phase stepper (done / here / upcoming), each with passed/required.
+  function addPhases(c) {
+    const rows = (c.phases || []).map((p) => {
+      const cls = p.status === "done" ? "pass" : p.status === "active" ? "focus" : "todo";
+      const tick = p.status === "done" ? "✓" : p.status === "active" ? "→" : "";
+      const count = (p.passedCount != null && p.requiredCount != null) ? `${p.passedCount}/${p.requiredCount}` : "";
+      return `
+        <div class="plan-item">
+          <div class="time"><i class="dot ${cls}"></i></div>
+          <div><span>${tick ? tick + " " : ""}${esc(p.name)}</span><div class="why">${count}</div></div>
+        </div>`;
+    }).join("");
+    stream.appendChild(card(`
+      <div class="k">Your journey</div>
+      <div class="status-line">${c.journeyComplete ? "Journey complete" : (c.currentPhaseName ? esc(c.currentPhaseName) : "In progress")}</div>
+      ${rows}
+    `));
   }
 
   // ---- renderers ----
