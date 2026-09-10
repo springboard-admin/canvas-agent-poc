@@ -95,8 +95,8 @@ test("triage routes drop/quit talk to at_risk; advisingHandoff deflects, no loop
   route({ model: [classify("at_risk")] });
   assert.equal(await triage([{ role: "user", content: "i want to quit" }]), "at_risk");
   const out = advisingHandoff("at_risk");
-  assert.equal(out.cards[0].kind, "advising");
-  assert.ok(out.cards[0].email.includes("@"));
+  assert.equal(out.cards.length, 0); // email baked into the message, no card
+  assert.match(out.say, /@/);
 });
 
 test("fallbackCoach (no key) returns the cards shape", () => {

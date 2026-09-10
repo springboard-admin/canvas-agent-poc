@@ -126,10 +126,6 @@ body {
 .plan-item .why { color: var(--muted); font-size: 13.5px; margin-top: 2px; }
 a.rowlink { display:flex; gap:14px; text-decoration:none; color:inherit; }
 a.rowlink:hover { background: var(--hover, rgba(0,0,0,0.03)); border-radius:8px; }
-.copyrow { display:flex; align-items:center; gap:10px; }
-.copyemail { font-weight:600; user-select:all; }
-.copybtn { border:1px solid var(--stroke); background:transparent; color:var(--text); border-radius:7px; padding:4px 12px; font-size:13px; cursor:pointer; }
-.copybtn:hover { background: rgba(0,0,0,0.04); }
 .score { font-weight:600; }
 .score.good { color: #1a7f37; }
 .score.warn { color: #b5820b; }

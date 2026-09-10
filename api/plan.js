@@ -284,19 +284,14 @@ async function triage(messages) {
 // conversation as payload. Until then the advising inbox is the actual path.
 function advisingHandoff(kind) {
   const email = env("ADVISING_EMAIL", "advising@springboard.com");
-  const say =
+  const lead =
     kind === "crisis"
-      ? "I'm really glad you told me — this matters, and you shouldn't carry it alone. I've flagged your advising team and they'll reach out to support you as soon as they can."
-      : "That's a lot to be carrying, and this isn't something to sort out on your own. I've flagged your advising team — they'll reach out to support you as soon as they can.";
+      ? "I'm really glad you told me — this matters, and you shouldn't carry it alone."
+      : "That's a lot to be carrying, and this isn't something to sort out on your own.";
   return {
     source: kind, // "at_risk" | "crisis"
-    say,
-    cards: [{
-      kind: "advising",
-      title: "Your advising team",
-      email, // copyable — rendered as copy-to-clipboard, not a mailto link
-      note: "They'll reach out — you can also email them directly:",
-    }],
+    say: `${lead} I've flagged your advising team and they'll reach out as soon as they can — you can also email them at ${email}.`,
+    cards: [],
   };
 }
 
