@@ -56,9 +56,12 @@ app needs its own loose-coupling regression note (as `student-greeting-hub` has)
 
 ### Invariant worth protecting
 
-Progress/health is read from the My Progress app and **never recomputed here**. If the agent
-ever disagrees with the student's screen, trust is gone. `lib/myprogress.js` is the only place
-that data enters; `deriveState()` is pure and the model never touches the numbers.
+Progress is read from My Progress's **`student_progress`** edge fn — the SAME authoritative
+output its own PhaseJourney UI uses — and **never recomputed here**. `gateMet`, `passedCount`,
+`cumulativeScore`, per-item score/passed/url all come straight from it. Agent-side logic is
+**presentation only** (grouping items into weeks, labels, next step). If a fact isn't exposed,
+**expose it from My Progress** — never clone its math (that's how the retired `curriculum_state`
+re-implementation drifted). See the `reuse-not-reimplement` memory.
 
 Passing is judged by the course's **gate** (`curriculum_state.gate`: all_complete | pass_count |
 cumulative), not a hardcoded rule — a student can be at 80% yet not passing if the gate is

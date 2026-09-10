@@ -4,9 +4,9 @@
 // reads facts + renders cards via tools; card CONTENTS are built by us from authoritative
 // data, never the model's words. Response: { say, cards:[...], source }.
 import { env, readState, parseCookies } from "../lib/lti.js";
-import { getCurriculumState, deriveState } from "../lib/myprogress.js";
+import { getStudentProgress, deriveState } from "../lib/myprogress.js";
 import { toolDefs, runTool, makeToolCtx } from "../lib/connectors/index.js";
-import { progressCard, nextCard } from "../lib/connectors/curriculum.js";
+import { progressCard, nextCard } from "../lib/connectors/myprogress.js";
 
 export const config = { api: { bodyParser: true } };
 
@@ -52,8 +52,8 @@ export default async function handler(req, res) {
       }
     } else {
       // No API key → deterministic demo path over the same single source.
-      const cs = await getCurriculumState(courseId, studentId).catch(() => null);
-      agent = fallbackCoach({ messages, status: deriveState(cs) });
+      const sp = await getStudentProgress(courseId, studentId).catch(() => null);
+      agent = fallbackCoach({ messages, status: deriveState(sp) });
     }
 
     res.status(200).json(agent);
