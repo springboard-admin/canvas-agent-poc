@@ -69,11 +69,11 @@ test("deriveState: gateMet true → caught_up (even if some items unpassed)", ()
 
 test("deriveState follows the ACTIVE phase; informational phase surfaces guidance, not 'caught up'", () => {
   const sp = SP();
-  sp.currentPhaseIndex = 2;
   sp.phases.push(
     { name: "Exam Prep", status: "done", gateMet: true, items: [] },
     { name: "ExCPT Exam", status: "active", gateMet: false, informationalOnly: true, items: [], informationalContent: { body: "Register for your ExCPT exam — watch for our email in a day or two." } },
   );
+  sp.currentPhaseIndex = sp.phases.length - 1; // the ExCPT Exam phase we just pushed
   const s = deriveState(sp);
   assert.equal(s.state, "informational");
   assert.equal(s.phaseName, "ExCPT Exam");
