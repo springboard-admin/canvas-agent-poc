@@ -82,6 +82,55 @@ test("deriveState follows the ACTIVE phase; informational phase surfaces guidanc
   assert.equal(s.score, null);
 });
 
+test("graded post-curriculum phase: practice-exam requirement + progress + next", () => {
+  const sp = {
+    configured: true, currentPhaseIndex: 0, journeyComplete: false,
+    phases: [{
+      name: "Exam Prep", status: "active", gateMet: false, gateType: "all_complete", passedCount: 0, requiredCount: 1, totalCount: 1,
+      comingSoon: { body: "Register for your ExCPT Exam." },
+      items: [{
+        title: "ExCPT Exam Prep | Study Weeks", passed: false, done: true, isPage: false, requiredPassCount: 2, requireAllAttempted: true,
+        subItems: [
+          { title: "Baseline Practice Exam", score: 58, points: 100, passed: false, done: true, url: "b" },
+          { title: "Practice Exam 1", score: 66, points: 100, passed: false, done: true, url: "p1" },
+          { title: "Practice Exam 2", score: 85, points: 100, passed: true, done: true, url: "p2" },
+          { title: "Practice Exam 3", score: null, points: 100, passed: false, done: false, url: "p3" },
+          { title: "Practice Exam 4", score: null, points: 100, passed: false, done: false, url: "p4" },
+          { title: "Final Practice Exam", score: null, points: 100, passed: false, done: false, url: "pf" },
+        ],
+      }],
+    }],
+  };
+  const s = deriveState(sp);
+  assert.equal(s.phaseName, "Exam Prep");
+  assert.equal(s.units[0].requirement, "pass 2 of 6, attempt all 6");
+  assert.equal(s.units[0].passed, 1);
+  assert.equal(s.units[0].attempted, 3);
+  assert.equal(s.units[0].total, 6);
+  assert.equal(s.next.title, "Baseline Practice Exam"); // first not-passed
+  assert.match(s.guidance, /Register for your ExCPT/);
+});
+
+test("lab-skills phase: 'pass all N' requirement", () => {
+  const sp = {
+    configured: true, currentPhaseIndex: 0, journeyComplete: false,
+    phases: [{ name: "Externship Readiness", status: "active", gateMet: false, gateType: "all_complete",
+      items: [{ title: "Externship Readiness", passed: false, done: false, isPage: false, subItems: [
+        { title: "Lab A", score: null, points: 100, passed: false, done: false, url: "a" },
+        { title: "Lab B", score: null, points: 100, passed: false, done: false, url: "b" },
+      ] }] }],
+  };
+  assert.equal(deriveState(sp).units[0].requirement, "pass all 2");
+});
+
+test("open_practice renders the RxReps card", async () => {
+  route({ model: [toolUse("open_practice", {}), finalText("Here's some extra practice.")] });
+  const out = await runAgent(agentArgs({ messages: [{ role: "user", content: "i feel underprepared" }] }));
+  const card = out.cards.find((c) => c.kind === "open");
+  assert.match(card.url, /rxreps/);
+  assert.equal(card.cta, "Start practice →");
+});
+
 test("derivePhases: whole journey stepper", () => {
   const j = derivePhases(SP());
   assert.equal(j.phases.length, 2);

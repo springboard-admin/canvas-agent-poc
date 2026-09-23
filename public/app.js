@@ -144,10 +144,11 @@
   }
 
   function addOpen(c) {
+    const cta = c.cta || "Open →";
     const el = card(`
-      <div class="k">Open in Canvas</div>
+      <div class="k">${esc(cta.replace(/\s*→\s*$/, ""))}</div>
       <div class="next-title">${esc(c.title)}</div>
-      ${c.url ? `<a class="start" href="${c.url}" target="_blank" rel="noopener">Open in Canvas →</a>` : ""}
+      ${c.url ? `<a class="start" href="${c.url}" target="_blank" rel="noopener">${esc(cta)}</a>` : ""}
     `);
     el.classList.add("hero-card");
     stream.appendChild(el);
@@ -192,12 +193,13 @@
   // Mirrors My Progress exactly. Focus view (behind): no score, just the next step.
   // Detailed view (on track): score + the full week list. Rows are whole-row clickable.
   function addStatus(s) {
-    // A whole-row link: clicking anywhere opens the row's target in a new tab.
-    const row = (week, detailHtml, url, done) => {
+    // A whole-row link: clicking anywhere opens the row's target in a new tab. `heading` is the
+    // unit name ("Week 3", "ExCPT Exam Prep", a lab-skills module).
+    const row = (heading, detailHtml, url, done) => {
       const inner = `
         <div class="time">${done ? "✓" : ""}</div>
         <div>
-          <span>Week ${week}</span>
+          <span>${esc(heading)}</span>
           <div class="why">${detailHtml}</div>
         </div>`;
       return url
@@ -208,7 +210,7 @@
     if (s.view === "focus") {
       const n = s.next;
       const body = n
-        ? row(n.week, esc(n.title), n.url, false)
+        ? row(n.unit || ("Week " + n.week), esc(n.title), n.url, false)
         : `<div class="why">You're all caught up for this week.</div>`;
       stream.appendChild(card(`
         <div class="k">Where you stand</div>
@@ -233,7 +235,8 @@
     const rows = (s.rows || []).map((r) => {
       const detail = r.items.map(itemLine).join("<br>");
       const url = (r.items.find((i) => !i.complete && i.url) || r.items.find((i) => i.url) || {}).url || null;
-      return row(r.week, detail, url, r.done);
+      const heading = (r.name || ("Week " + r.week)) + (r.requirement ? ` · ${r.requirement}` : "");
+      return row(heading, detail, url, r.done);
     }).join("");
     const scoreLine =
       typeof s.score === "number"
