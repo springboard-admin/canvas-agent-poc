@@ -67,6 +67,21 @@ test("deriveState: gateMet true → caught_up (even if some items unpassed)", ()
   assert.equal(deriveState(sp).state, "caught_up");
 });
 
+test("deriveState follows the ACTIVE phase; informational phase surfaces guidance, not 'caught up'", () => {
+  const sp = SP();
+  sp.currentPhaseIndex = 2;
+  sp.phases.push(
+    { name: "Exam Prep", status: "done", gateMet: true, items: [] },
+    { name: "ExCPT Exam", status: "active", gateMet: false, informationalOnly: true, items: [], informationalContent: { body: "Register for your ExCPT exam — watch for our email in a day or two." } },
+  );
+  const s = deriveState(sp);
+  assert.equal(s.state, "informational");
+  assert.equal(s.phaseName, "ExCPT Exam");
+  assert.match(s.guidance, /Register for your ExCPT/);
+  assert.equal(s.next, null); // no quiz — the next step is the guidance
+  assert.equal(s.score, null);
+});
+
 test("derivePhases: whole journey stepper", () => {
   const j = derivePhases(SP());
   assert.equal(j.phases.length, 2);
