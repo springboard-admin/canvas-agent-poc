@@ -9,6 +9,10 @@ import { toolDefs, runTool, makeToolCtx } from "../lib/connectors/index.js";
 process.env.ANTHROPIC_API_KEY = "test-key";
 process.env.MYPROGRESS_URL = "https://example.supabase.co";
 process.env.MYPROGRESS_ANON_KEY = "anon-test";
+process.env.R2_ACCOUNT_ID = "acc";
+process.env.R2_BUCKET = "bkt";
+process.env.R2_ACCESS_KEY_ID = "k";
+process.env.R2_SECRET_ACCESS_KEY = "s";
 
 // student_progress fixture (Curriculum phase, cumulative pass rule ≥70).
 const SP = () => ({
@@ -27,11 +31,20 @@ const toolUse = (name, input, id = "t1") => ({ content: [{ type: "tool_use", id,
 const finalText = (text) => ({ content: [{ type: "text", text }], stop_reason: "end_turn" });
 const classify = (label) => ({ content: [{ type: "tool_use", id: "c", name: "classify", input: { label } }], stop_reason: "tool_use" });
 
-function route({ model = [], sp = SP() } = {}) {
+function route({ model = [], sp = SP(), memoryMd = "", dashboard = null, puts = [] } = {}) {
   const q = [...model];
-  globalThis.fetch = async (url) => {
-    if (String(url).includes("api.anthropic.com")) return { ok: true, json: async () => (q.length > 1 ? q.shift() : q[0]), text: async () => "" };
-    return { ok: true, status: 200, json: async () => sp, text: async () => "" };
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes("api.anthropic.com")) return { ok: true, json: async () => (q.length > 1 ? q.shift() : q[0]), text: async () => "" };
+    if (u.includes("r2.cloudflarestorage.com")) {
+      if (opts?.method === "PUT") { puts.push({ url: u, body: opts.body }); return { ok: true, status: 200, text: async () => "" }; }
+      return { ok: true, status: 200, text: async () => memoryMd }; // GET
+    }
+    if (u.includes("canvas-dashboard")) {
+      if (!dashboard) return { ok: false, status: 500, json: async () => ({}), text: async () => "" };
+      return { ok: true, status: 200, json: async () => dashboard, text: async () => "" };
+    }
+    return { ok: true, status: 200, json: async () => sp, text: async () => "" }; // student_progress
   };
 }
 const agentArgs = (over = {}) => ({ messages: [{ role: "user", content: "hi" }], mode: "chat", daysAway: null, courseId: "137", studentId: "187", ctx: {}, ...over });
@@ -123,6 +136,32 @@ test("fallbackCoach: 'how am I doing' words only; full list on explicit ask", ()
   const status = deriveState(SP());
   assert.equal(fallbackCoach({ messages: [{ role: "user", content: "how am I doing" }], status }).cards.length, 0);
   assert.equal(fallbackCoach({ messages: [{ role: "user", content: "show me everything" }], status }).cards[0].kind, "progress");
+});
+
+// --- memory (R2) + engagement ---
+
+test("preloaded memory reaches the model; save_memory writes the curated md to R2", async () => {
+  const puts = [];
+  route({ memoryMd: "## Goals\nPass CPhT by Dec\n", model: [toolUse("save_memory", { markdown: "## Goals\nPass CPhT by Dec\n## Commitments\nStudy Tue 7pm\n" }), finalText("Got it — locked in.")], puts });
+  const out = await runAgent(agentArgs({ messages: [{ role: "user", content: "remind me tuesday 7pm" }] }));
+  assert.equal(puts.length, 1); // persisted
+  assert.match(puts[0].body, /Study Tue 7pm/);
+  assert.equal(typeof out.say, "string");
+});
+
+test("get_engagement returns the whitelisted shape from canvas-dashboard", async () => {
+  route({
+    model: [toolUse("get_engagement", {}), finalText("You've been steady.")],
+    dashboard: { studyConsistency: { consistencyScore: 64 }, overdueAssignments: 2, upcomingAssignments: 1, weeklyBreakdown: [{ overallHealth: 60 }, { overallHealth: 70 }, { overallHealth: 78 }] },
+  });
+  const out = await runAgent(agentArgs());
+  assert.match(out.say, /steady/i); // model got a valid tool result and replied
+});
+
+test("engagement degrades to unavailable when canvas-dashboard is down", async () => {
+  route({ model: [toolUse("get_engagement", {}), finalText("Can't see your engagement right now.")], dashboard: null });
+  const out = await runAgent(agentArgs());
+  assert.equal(typeof out.say, "string"); // no throw; agent still replies
 });
 
 test("registry: a dropped-in connector contributes its tool and dispatches", async () => {

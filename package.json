@@ -5,7 +5,7 @@
   "description": "Lite POC: a clean, futuristic AI study-agent that launches as an LTI 1.3 tool inside a Canvas course and builds time-boxed study plans from the course's Modules.",
   "type": "module",
   "scripts": {
-    "check": "node --check api/launch.js && node --check api/plan.js && node --check lib/lti.js && node --check lib/oauth1.js && node --check lib/canvas.js && node --check lib/store.js && node --check public/app.js",
+    "check": "for f in api/launch.js api/plan.js lib/lti.js lib/oauth1.js lib/canvas.js lib/store.js lib/r2.js lib/myprogress.js lib/connectors/index.js lib/connectors/myprogress.js lib/connectors/memory.js lib/connectors/engagement.js public/app.js; do node --check \"$f\" || exit 1; done",
     "test": "node --test"
   },
   "dependencies": {

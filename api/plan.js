@@ -6,6 +6,7 @@
 import { env, readState, parseCookies } from "../lib/lti.js";
 import { getStudentProgress, deriveState } from "../lib/myprogress.js";
 import { toolDefs, runTool, makeToolCtx } from "../lib/connectors/index.js";
+import { readMemory } from "../lib/connectors/memory.js";
 import { progressCard, nextCard } from "../lib/connectors/myprogress.js";
 
 export const config = { api: { bodyParser: true } };
@@ -96,6 +97,16 @@ list. Only render show_all_weeks if they then ask to see everything.
 NEVER invent, estimate, or recompute a fact. If a tool doesn't give it, say you don't have
 it — don't guess. Everything you state must trace to a tool result.
 
+MEMORY — you may be given a [MEMORY] note at the top: a small curated markdown of durable facts
+about this student from past visits (goals, commitments, what helps them). Use it ONLY where it
+helps them progress — greet naturally, honour a commitment they made, pick up where you left
+off. Don't recite it. When you learn something durable worth recalling next time (a goal, a
+commitment like "study Tue 7pm", what motivates them), call save_memory with the WHOLE updated
+markdown — keep it small and curated, prune stale lines. Don't save routine chatter.
+
+ENGAGEMENT — get_engagement gives study consistency, overdue/upcoming and momentum trend; use
+it to gauge whether they're slipping and to tailor encouragement.
+
 CARDS ARE THE EXCEPTION, NOT THE RULE. Default: just talk, no card. A card is a heavy
 interruption — earn it. Specific questions and follow-ups get a spoken answer, no card.
 Never show the same card two turns running.
@@ -146,11 +157,19 @@ async function runAgent({ messages, mode, daysAway, courseId, studentId, ctx, di
   const cards = [];
   const tools = toolDefs();
 
+  // Preload the student's memory once and prime the connector cache (so the memory tool
+  // reuses it, no second R2 read). The model always sees what we remember.
+  const mem = await readMemory(courseId, studentId).catch(() => ({ md: "", key: "", enabled: false }));
+  toolCtx.cache.set("memory", mem);
+
   const convo = (messages || [])
     .filter((m) => m && m.role && m.content)
     .slice(-12)
     .map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: String(m.content) }));
   const anthropicMessages = [...convo];
+  if (mem.md && mem.md.trim()) {
+    anthropicMessages.unshift({ role: "user", content: `[MEMORY — what you already know about this student from past visits; use it only where it helps them progress]\n${mem.md}` });
+  }
   if (mode === "greeting") {
     anthropicMessages.push({ role: "user", content: `[opening — the student ${ctx?.givenName ? ctx.givenName + " " : ""}just landed${daysAway != null ? `, ${daysAway} days since last visit` : ""}, hasn't asked anything. Follow the OPENING GREETING rules: one warm line + a light question. No task, no card.]` });
   }

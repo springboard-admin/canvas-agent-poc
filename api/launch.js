@@ -10,8 +10,25 @@ export const config = { api: { bodyParser: true } };
 
 export default async function handler(req, res) {
   try {
+    // DEMO ONLY: standalone launch without Canvas/LTI, so we can test with a real student's
+    // data outside the embedded course. Unauthenticated by design (experimental, URL not
+    // shared, no real students). DO NOT expose this to real students / production.
+    if (req.method === "GET") {
+      const userId = strParam(req.query?.userId);
+      const courseId = strParam(req.query?.courseId);
+      if (!userId || !courseId) {
+        res.status(400).send("Standalone launch needs ?userId=&courseId=. (Normally opened via Canvas LTI.)");
+        return;
+      }
+      const name = await fetchCanvasName(userId).catch(() => "there");
+      const ctx = { userId, courseId, loginId: "", name, givenName: name, contextTitle: "", roles: "", isStudent: true };
+      const sessionToken = await makeState({ ctx });
+      setCookie(res, "sa_session", sessionToken);
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.status(200).send(renderShell(ctx, sessionToken));
+      return;
+    }
     if (req.method !== "POST") {
-      // A GET here is usually someone opening the URL directly, not a launch.
       res.status(405).send("This endpoint expects an LTI POST launch.");
       return;
     }
@@ -77,6 +94,21 @@ function normalizeBody(body) {
     out[k] = Array.isArray(v) ? v[0] : v;
   });
   return out;
+}
+
+const strParam = (v) => (Array.isArray(v) ? v[0] : v) || "";
+
+// Fetch the student's given name from Canvas for the standalone (non-LTI) launch.
+async function fetchCanvasName(userId) {
+  const baseUrl = env("CANVAS_BASE_URL", "");
+  const token = env("CANVAS_API_TOKEN", "");
+  if (!baseUrl || !token) return "there";
+  const r = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/v1/users/${encodeURIComponent(userId)}/profile`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!r.ok) return "there";
+  const p = await r.json();
+  return (p.short_name || p.name || "there").split(/\s+/)[0];
 }
 
 function escapeHtml(s) {
