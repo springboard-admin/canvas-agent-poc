@@ -169,10 +169,10 @@ test("show_phases renders the journey stepper", async () => {
   assert.equal(out.cards.find((c) => c.kind === "phases").phases.length, 2);
 });
 
-test("distress drops task/open cards, keeps the reply", async () => {
-  route({ model: [toolUse("show_next_step", {}), finalText("I hear you.")] });
-  const out = await runAgent(agentArgs({ distress: true }));
-  assert.equal(out.cards.find((c) => c.kind === "next_step"), undefined);
+test("distress/at_risk go to the smart loop — cards are the agent's call, not force-stripped", async () => {
+  route({ model: [toolUse("show_next_step", {}), finalText("Here's a small step whenever you're ready.")] });
+  const out = await runAgent(agentArgs({ mood: "distress" }));
+  assert.ok(out.cards.find((c) => c.kind === "next_step")); // no hard strip — the agent judges
 });
 
 test("unavailable → get_progress reports it, agent still replies", async () => {

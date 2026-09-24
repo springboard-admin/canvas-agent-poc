@@ -43,13 +43,14 @@ export default async function handler(req, res) {
 
     let agent;
     if (process.env.ANTHROPIC_API_KEY) {
-      // Triage real user turns (never the opening) for emotional routing. This is a
-      // safety gate BEFORE the agent loop — at_risk/crisis never reach the tools.
+      // Hard safety gate — ONLY genuine crisis (self-harm/emergency) bypasses the model with a
+      // static handoff. Everything else goes to the smart agent, which reads the student's
+      // actual tone and escalates via contact_advising when a human's needed.
       const label = mode === "greeting" ? "coach" : await triage(messages);
-      if (label === "crisis" || label === "at_risk") {
-        agent = advisingHandoff(label);
+      if (label === "crisis") {
+        agent = advisingHandoff("crisis");
       } else {
-        agent = await runAgent({ messages, mode, daysAway, courseId, studentId, ctx, distress: label === "distress" });
+        agent = await runAgent({ messages, mode, daysAway, courseId, studentId, ctx, mood: label });
       }
     } else {
       // No API key → deterministic demo path over the same single source.
@@ -141,6 +142,13 @@ its guidance.
 EXTRA PRACTICE — if the student says they feel under-prepared, nervous about the exam, or want
 more practice, call open_practice (links them to the RxReps practice tool). Offer it warmly.
 
+READ THE ROOM — judge the student's emotional state from THEIR OWN words, never from a label,
+and respond in proportion. Genuinely low/overwhelmed ("I can't do this", "I'm drowning") → warmth
+first, slow down, don't push a task. Calm or matter-of-fact — even about a setback ("I failed,
+what's the workaround?") or a plain request ("I'd like to talk to my advisor") → be direct and
+useful, and SKIP the sympathy cushion. Never open with "that's a lot to carry" for a neutral
+message — it reads as canned and patronising. Match your warmth to what they actually show.
+
 ESCALATE TO A HUMAN — when a question is outside what your tools can answer and a real person
 should handle it (retake / exam-sponsorship / program policy, "who is my advisor", advisor's
 contact, "alert them for me", or they're stuck in a way progress tools can't fix), call
@@ -178,7 +186,7 @@ Under ~25 words.`;
 // collected from the render tools (authoritative content, built by us). Cap iterations so
 // a misbehaving model can never hang; fall back honestly if the call fails outright.
 const MAX_ITERS = 6;
-async function runAgent({ messages, mode, daysAway, courseId, studentId, ctx, distress = false }) {
+async function runAgent({ messages, mode, daysAway, courseId, studentId, ctx, mood = "coach" }) {
   const model = env("ANTHROPIC_MODEL", "claude-sonnet-5");
   const toolCtx = makeToolCtx({ courseId, studentId });
   const cards = [];
@@ -200,8 +208,9 @@ async function runAgent({ messages, mode, daysAway, courseId, studentId, ctx, di
   if (mode === "greeting") {
     anthropicMessages.push({ role: "user", content: `[opening — the student ${ctx?.givenName ? ctx.givenName + " " : ""}just landed${daysAway != null ? `, ${daysAway} days since last visit` : ""}, hasn't asked anything. Follow the OPENING GREETING rules: one warm line + a light question. No task, no card.]` });
   }
-  if (distress) {
-    anthropicMessages.push({ role: "user", content: "[the student sounds low/overwhelmed — lead with warmth, DO NOT offer a task or show a next-step/open card this turn, just be human and invite them to say more.]" });
+  if (mood === "distress" || mood === "at_risk") {
+    const hint = mood === "at_risk" ? "may be thinking about stepping back from the program" : "may be having a hard time";
+    anthropicMessages.push({ role: "user", content: `[a quick read suggests the student ${hint} — but TRUST what they actually wrote. If they're genuinely low, lead with warmth and don't push a task. If they're calm/matter-of-fact (even about a setback, or just wanting their advisor), be direct and helpful — don't over-cushion. Escalate via contact_advising if it needs a human.]` });
   }
 
   let say = "";
@@ -226,12 +235,7 @@ async function runAgent({ messages, mode, daysAway, courseId, studentId, ctx, di
     return { source: "error", say: "I hit a snag on my end just now — mind saying that again?", cards: [] };
   }
 
-  // Preserve the guarantees: while distressed, drop any task/navigation cards (keep an
-  // overview if the model insisted). A card must never surface work into a hard moment.
-  let finalCards = cards;
-  if (distress) finalCards = finalCards.filter((c) => c.kind === "progress");
-
-  return { source: "claude", say: say || "I'm here — what's on your mind?", cards: finalCards };
+  return { source: "claude", say: say || "I'm here — what's on your mind?", cards };
 }
 
 async function callMessages({ model, system, messages, tools, maxTokens = 800 }) {
