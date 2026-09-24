@@ -228,6 +228,16 @@ test("engagement degrades to unavailable when canvas-dashboard is down", async (
   assert.equal(typeof out.say, "string"); // no throw; agent still replies
 });
 
+test("contact_advising gives the agent the advising email to escalate (not a dead 'I don't have it')", async () => {
+  const res = await runTool("contact_advising", { reason: "exam retake policy" }, makeToolCtx({ courseId: "1", studentId: "1" }), []);
+  assert.match(res.email, /@/);
+  assert.equal(res.flagged, true);
+  // and the agent can call it mid-loop
+  route({ model: [toolUse("contact_advising", { reason: "who is my advisor" }), finalText("I've flagged your advising team — reach them at advising@springboard.com.")] });
+  const out = await runAgent(agentArgs({ messages: [{ role: "user", content: "what is my advisor's email?" }] }));
+  assert.match(out.say, /advising@/);
+});
+
 test("registry: a dropped-in connector contributes its tool and dispatches", async () => {
   const dummy = { name: "dummy", fetch: async () => ({ hi: 1 }), tools: [{ def: { name: "dummy_ping", description: "d", input_schema: { type: "object", properties: {} } }, run: (_i, d) => ({ pong: d.hi }) }] };
   assert.ok(toolDefs([dummy]).some((d) => d.name === "dummy_ping"));
