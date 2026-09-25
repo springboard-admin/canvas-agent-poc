@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runAgent, triage, advisingHandoff, fallbackCoach } from "../api/plan.js";
 import { deriveState, derivePhases } from "../lib/myprogress.js";
+import { deriveCanvasProgress } from "../lib/canvas.js";
 import { toolDefs, runTool, makeToolCtx } from "../lib/connectors/index.js";
 
 process.env.ANTHROPIC_API_KEY = "test-key";
@@ -31,7 +32,7 @@ const toolUse = (name, input, id = "t1") => ({ content: [{ type: "tool_use", id,
 const finalText = (text) => ({ content: [{ type: "text", text }], stop_reason: "end_turn" });
 const classify = (label) => ({ content: [{ type: "tool_use", id: "c", name: "classify", input: { label } }], stop_reason: "tool_use" });
 
-function route({ model = [], sp = SP(), memoryMd = "", dashboard = null, puts = [] } = {}) {
+function route({ model = [], sp = SP(), memoryMd = "", dashboard = null, puts = [], modules = null } = {}) {
   const q = [...model];
   globalThis.fetch = async (url, opts) => {
     const u = String(url);
@@ -43,6 +44,10 @@ function route({ model = [], sp = SP(), memoryMd = "", dashboard = null, puts = 
     if (u.includes("canvas-dashboard")) {
       if (!dashboard) return { ok: false, status: 500, json: async () => ({}), text: async () => "" };
       return { ok: true, status: 200, json: async () => dashboard, text: async () => "" };
+    }
+    if (u.includes("/modules")) {
+      if (!modules) return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
+      return { ok: true, status: 200, json: async () => modules, text: async () => "" };
     }
     return { ok: true, status: 200, json: async () => sp, text: async () => "" }; // student_progress
   };
@@ -179,6 +184,58 @@ test("unavailable → get_progress reports it, agent still replies", async () =>
   route({ model: [toolUse("get_progress", {}), finalText("I can't read your progress right now.")], sp: { configured: false } });
   const out = await runAgent(agentArgs());
   assert.match(out.say, /can't read/i);
+});
+
+test("unconfigured course: get_canvas_progress reads modules, quiz closes the module", async () => {
+  const now = Date.parse("2026-06-01T00:00:00Z");
+  const mapped = [
+    { name: "Week 1", position: 1, items: [
+      { title: "Read", type: "Page", completed: false, dueAt: null },
+      { title: "Quiz", type: "Quiz", completed: true, dueAt: "2026-01-01T00:00:00Z" },
+    ] },
+    { name: "Week 2", position: 2, items: [
+      { title: "Page", type: "Page", completed: true, dueAt: null },
+      { title: "Quiz", type: "Quiz", completed: false, dueAt: "2026-12-01T00:00:00Z" },
+    ] },
+  ];
+  const facts = deriveCanvasProgress(mapped, now);
+  assert.equal(facts.totalModules, 2);
+  assert.equal(facts.doneModules, 1); // week 1 quiz submitted; unread page ignored
+  assert.equal(facts.leftModules, 1);
+  assert.equal(facts.dueSoFar, 1);
+  assert.equal(facts.dueSubmitted, 1);
+  assert.equal(facts.dueUnsubmitted, 0);
+  assert.equal(facts.onTrack, true);
+  assert.equal(facts.next.module, "Week 2");
+  assert.equal(facts.next.early, true);
+  const both = deriveCanvasProgress([{ name: "M", position: 1, items: [
+    { title: "A", type: "Quiz", completed: true, dueAt: "2026-01-01T00:00:00Z" },
+    { title: "B", type: "Quiz", completed: false, dueAt: "2026-01-02T00:00:00Z" },
+  ] }], now);
+  assert.equal(both.doneModules, 0);
+  assert.equal(both.next.title, "B");
+
+  process.env.CANVAS_BASE_URL = "https://canvas.example.com";
+  process.env.CANVAS_API_TOKEN = "tok";
+  const canvasModules = [{
+    id: 1, name: "Week 1", position: 1,
+    items: [
+      { id: 10, title: "Read", type: "Page", completion_requirement: { completed: false } },
+      { id: 11, title: "Quiz", type: "Quiz", html_url: "q", content_details: { due_at: "2020-01-01T00:00:00Z" }, completion_requirement: { completed: false, type: "must_submit" } },
+    ],
+  }];
+  route({
+    model: [toolUse("get_progress", {}, "t1"), toolUse("get_canvas_progress", {}, "t2"), finalText("Your Week 1 quiz is still open.")],
+    sp: { configured: false },
+    modules: canvasModules,
+  });
+  const out = await runAgent(agentArgs());
+  assert.match(out.say, /Week 1 quiz/i);
+  const res = await runTool("get_canvas_progress", {}, makeToolCtx({ courseId: "137", studentId: "187" }), []);
+  assert.equal(res.onTrack, false);
+  assert.equal(res.doneModules, 0);
+  assert.equal(res.next.title, "Quiz");
+  assert.equal(res.next.early, false);
 });
 
 test("loop cap: never-stopping model is cut off, no hang", async () => {
