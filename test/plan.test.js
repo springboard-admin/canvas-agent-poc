@@ -168,6 +168,23 @@ test("open_in_canvas uses the real module URL from a sub-item", async () => {
   assert.equal(out.cards.find((c) => c.kind === "open").url, "u2");
 });
 
+test("open_in_canvas falls back to the Canvas module item when My Progress has no URL", async () => {
+  process.env.CANVAS_BASE_URL = "https://canvas.example.com";
+  process.env.CANVAS_API_TOKEN = "tok";
+  route({
+    model: [toolUse("open_in_canvas", { week: 1 }), finalText("Here's Week 1.")],
+    sp: { configured: false },
+    modules: [{
+      id: 9, name: "Week 1 - Program Launch", position: 1,
+      items: [{ id: 11, title: "Week 1 Overview", type: "Page", html_url: "https://canvas.example.com/modules/week1" }],
+    }],
+  });
+  const out = await runAgent(agentArgs());
+  const card = out.cards.find((c) => c.kind === "open");
+  assert.equal(card.url, "https://canvas.example.com/modules/week1");
+  assert.equal(card.week, 1);
+});
+
 test("show_phases renders the journey stepper", async () => {
   route({ model: [toolUse("show_phases", {}), finalText("Your journey:")] });
   const out = await runAgent(agentArgs());
