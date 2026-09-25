@@ -205,7 +205,15 @@ test("unconfigured course: get_canvas_progress reads modules, quiz closes the mo
   assert.equal(facts.dueSoFar, 1);
   assert.equal(facts.dueSubmitted, 1);
   assert.equal(facts.dueUnsubmitted, 0);
-  assert.equal(facts.onTrack, true);
+  assert.equal(facts.onTrack, true); // Dec due is outside the next 3 days
+  const soon = deriveCanvasProgress([{ name: "W", position: 1, items: [
+    { title: "Reflection", type: "Assignment", completed: false, dueAt: "2026-06-03T00:00:00Z" },
+  ] }], now);
+  assert.equal(soon.onTrack, false);
+  const soonDone = deriveCanvasProgress([{ name: "W", position: 1, items: [
+    { title: "Reflection", type: "Assignment", completed: true, dueAt: "2026-06-03T00:00:00Z" },
+  ] }], now);
+  assert.equal(soonDone.onTrack, true);
   assert.equal(facts.next.module, "Week 2");
   assert.equal(facts.next.early, true);
   const both = deriveCanvasProgress([{ name: "M", position: 1, items: [
