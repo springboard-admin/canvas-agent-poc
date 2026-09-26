@@ -320,6 +320,15 @@ test("contact_advising gives the agent the advising email to escalate (not a dea
   assert.match(out.say, /advising@/);
 });
 
+test("get_live_schedule returns the cohort stub: last, past recordings, upcoming", async () => {
+  const res = await runTool("get_live_schedule", {}, makeToolCtx({ courseId: "207", studentId: "2153" }), []);
+  assert.equal(res.source, "stub");
+  assert.equal(res.lastSession.title, "Week 2 live session");
+  assert.ok(res.lastSession.recordingUrl);
+  assert.ok(res.recordings.some((r) => r.title === "Orientation"));
+  assert.ok(res.upcoming.some((u) => u.kind === "office_hours"));
+});
+
 test("registry: a dropped-in connector contributes its tool and dispatches", async () => {
   const dummy = { name: "dummy", fetch: async () => ({ hi: 1 }), tools: [{ def: { name: "dummy_ping", description: "d", input_schema: { type: "object", properties: {} } }, run: (_i, d) => ({ pong: d.hi }) }] };
   assert.ok(toolDefs([dummy]).some((d) => d.name === "dummy_ping"));

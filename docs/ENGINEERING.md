@@ -24,6 +24,7 @@ Per **one** `POST /api/plan` turn (i.e. each student message; the opening greeti
 | **Anthropic — agent loop** (`ANTHROPIC_MODEL`, Sonnet 5) | every turn that isn't at_risk/crisis | **2–4 calls/turn** — a tool-use loop (capped at 6 iterations). System prompt + tools are prompt-cached, so each round-trip re-reads the stable prefix at ~10% cost. at_risk/crisis turns make **zero** model calls (static advising handoff). |
 | **Connector edge fns** | only when a tool needs them | Each connector fetches its source **lazily** and memoizes per turn — a turn pays only for sources whose tools the model actually calls. Today one connector (`curriculum` → `phase-config?action=curriculum_state`); the mentor-call / live-session connectors will add their own edge fns when they ship. |
 | **Canvas modules GET** | only when `get_canvas_progress` runs | Fallback for courses My Progress returns `configured: false`. One `GET /courses/:id/modules` (items + content_details + student completion). Not called on configured courses unless the model breaks the prompt rule. |
+| **Live schedule** | only when `get_live_schedule` runs | In-process stub, same payload for every course. No DB call. **Backlog:** replace `livesessions` fetch with a DB read by `courseId`. |
 | Vercel function invocation | every turn | the `/api/plan` handler itself. |
 
 **No database, no cron, no background jobs, no persistence** in the poc today (stateless).
